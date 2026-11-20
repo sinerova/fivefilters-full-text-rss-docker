@@ -12,7 +12,7 @@ group "default" {
 
 target "all" {
   tags = ["${IMAGE}:latest", "${IMAGE}:${VERSION}"]
-  # linux/arm64 is built but not yet runtime-tested by the maintainer. linux/arm/v7 is excluded.
+  # linux/arm64 was runtime-tested by the maintainer on an ARM64 server (see Readme.md). linux/arm/v7 is excluded.
   platforms = ["linux/amd64", "linux/arm64"]
 }
 

@@ -76,7 +76,7 @@ docker buildx bake
 Platform status:
 
 - `linux/amd64`: built and tested (smoke test and PHPUnit suite).
-- `linux/arm64`: built, but **not yet runtime-tested**. Treat it as unverified until someone has run the smoke test on an ARM64 host.
+- `linux/arm64`: runtime-tested by the maintainer on an ARM64 server. The container started healthy and served requests through a reverse proxy (HAProxy). The full smoke test and PHPUnit suite have not been reported for this platform.
 - `linux/arm/v7`: not built or published.
 
 The base image and the site-rules commit are pinned in the `Dockerfile` (`PHP_IMAGE`, `SITE_CONFIG_COMMIT`). Override them with `--build-arg` if needed.
