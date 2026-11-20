@@ -1,5 +1,9 @@
 variable "IMAGE" {
-	default = "heussd/fivefilters-full-text-rss"
+	default = "ghcr.io/sinerova/fivefilters-full-text-rss"
+}
+
+variable "VERSION" {
+	default = "3.8.1-hardened"
 }
 
 group "default" {
@@ -7,11 +11,12 @@ group "default" {
 }
 
 target "all" {
-  tags = ["${IMAGE}:latest", "${IMAGE}:3.8.1"]
-	platforms = ["linux/amd64", "linux/arm64", "linux/arm/v7", "linux/arm/v6"]
+  tags = ["${IMAGE}:latest", "${IMAGE}:${VERSION}"]
+  # linux/arm64 is built but not yet runtime-tested by the maintainer. linux/arm/v7 is excluded.
+  platforms = ["linux/amd64", "linux/arm64"]
 }
 
 target "amd64" {
-	tags = ["${IMAGE}"]
+	tags = ["${IMAGE}:${VERSION}"]
 	platforms = ["linux/amd64"]
 }

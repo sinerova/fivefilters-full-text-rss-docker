@@ -1,0 +1,16 @@
+{
+    "name": "fivefilters-full-text-rss-docker/tests",
+    "description": "Test suite for the hardened Full-Text RSS service (AGPL-3.0)",
+    "license": "AGPL-3.0-only",
+    "type": "project",
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
+    },
+    "config": {
+        "sort-packages": true,
+        "platform": {
+            "php": "8.3.37"
+        }
+    },
+    "minimum-stability": "stable"
+}

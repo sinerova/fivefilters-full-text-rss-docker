@@ -1,0 +1,6 @@
+tests/vendor/
+tests/.phpunit.cache/
+tests/.phpunit.result.cache
+docs/*.tmp
+custom/*
+!custom/.gitkeep

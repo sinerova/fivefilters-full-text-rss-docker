@@ -29,7 +29,7 @@ $options->enabled = true;
 // true or 'user' (default) - let user decide
 // 'admin' - debug works only for logged in admin users
 // false - disabled
-$options->debug = true;
+$options->debug = 'admin';
 
 // Default entries (without access key)
 // ----------------------
@@ -223,7 +223,7 @@ $options->remove_native_ads = false;
 // If overriding with an environment variable, separate username and password with a colon, e.g.:
 // ftr_admin_credentials: admin:my-secret-password
 // Example: $options->admin_credentials = array('username'=>'admin', 'password'=>'my-secret-password');
-$options->admin_credentials = array('username'=>'admin', 'password'=>getenv('FTR_ADMIN_PASSWORD'));
+$options->admin_credentials = array('username'=>'admin', 'password'=>(string)getenv('FTR_ADMIN_PASSWORD'));
 
 // URLs to allow
 // ----------------------
@@ -308,7 +308,10 @@ $options->max_entries_with_key = 10;
 // true - enabled, all content will be filtered
 // 'user' (default) - user must pass &xss=1 in makefulltextfeed.php querystring to enable
 // false - disabled
-$options->xss_filter = 'user';
+// Changed for this fork: filtering is on for every request (was 'user'). Scripts and
+// event-handler attributes are removed by htmLawed. Set to 'user' only if a consumer
+// needs unfiltered markup (see Readme, "XSS filter").
+$options->xss_filter = true;
 
 // Favour item titles in feed
 // ----------------------

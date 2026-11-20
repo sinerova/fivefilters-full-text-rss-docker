@@ -1,15 +1,32 @@
 services:
   fullfeedrss:
-    image: "heussd/fivefilters-full-text-rss:latest"
+    build: .
+    # Override IMAGE to publish under a different registry path.
+    image: "${IMAGE:-ghcr.io/sinerova/fivefilters-full-text-rss}:latest"
     mem_limit: 2G
-    restart: always
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/apache2
+      - /var/lock/apache2
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
-      # Leave empty to disable admin section
-      - FTR_ADMIN_PASSWORD=
+      # Leave empty to disable the admin section (default).
+      # Set to a long random value to enable it.
+      - FTR_ADMIN_PASSWORD=${FTR_ADMIN_PASSWORD:-}
     volumes:
-      - "rss-cache:/var/www/html/cache/rss"
+      - "rss-cache:/var/www/html/cache"
       - "./custom:/var/www/html/site_config/custom"
     ports:
-      - "80:80"
+      - "80:8080"
+    networks:
+      - ftr
 volumes:
   rss-cache:
+networks:
+  ftr:
+    name: ftrnet

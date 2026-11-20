@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Fixture Article ü</title><meta charset="utf-8"></head>
+<body>
+<nav>menu</nav>
+<article>
+<h1>Fixture Article ü</h1>
+<p>First paragraph of a long enough article body to be extracted by readability heuristics. It talks about nothing in particular but has many words in it, commas, and sentences.</p>
+<p>Second paragraph, also long enough, with more words, more commas, and more content so the scoring prefers this container over the navigation.</p>
+<script>alert("xss")</script>
+<p onclick="steal()">Third paragraph with an event handler that must be stripped when XSS filtering is on.</p>
+</article>
+<footer>foot</footer>
+</body>
+</html>

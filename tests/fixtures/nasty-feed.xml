@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>Fix &amp; Feed ü</title>
+<link>http://127.0.0.1:8082/</link>
+<description>d</description>
+<item>
+<title>Item ü &amp; one</title>
+<link>http://127.0.0.1:8082/nasty.html</link>
+<guid>n1</guid>
+<pubDate>Mon, 02 Mar 2026 10:00:00 GMT</pubDate>
+<description>short</description>
+</item>
+</channel>
+</rss>
