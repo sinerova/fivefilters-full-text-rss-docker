@@ -73,7 +73,8 @@ check "/site_config is not served" '[ "$(http $BASE/site_config/)" = 403 ]'
 check "admin is disabled without a password" 'ex "php -r \"require \\\"/var/www/html/config.php\\\"; exit(\\\$options->admin_credentials[\\\"password\\\"]===\\\"\\\" ? 0 : 1);\""'
 check "still healthy after requests" '[ "$(health)" = healthy ]'
 
-changed=$("$CTR" diff "$NAME" | grep -vE ' /(tmp|run|var/lock|var/www/html/cache|var/www/html/site_config/custom)(/|$)' | grep -vE ' /(run|var/lock|var/run)' || true)
+# Podman reports the /etc directory itself as changed at startup (before any request); entries under /etc still count.
+changed=$("$CTR" diff "$NAME" | grep -vxE 'C /etc' | grep -vE ' /(tmp|run|var/lock|var/www/html/cache|var/www/html/site_config/custom)(/|$)' | grep -vE ' /(run|var/lock|var/run)' || true)
 check "no filesystem changes outside intended paths" '[ -z "$changed" ]'
 [ -n "$changed" ] && echo "$changed"
 
