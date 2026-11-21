@@ -29,11 +29,22 @@ trap cleanup EXIT
 "$CTR" run -d --name "$NAME" --read-only --tmpfs /tmp --tmpfs /run/apache2 --tmpfs /var/lock/apache2 \
   --cap-drop ALL --security-opt no-new-privileges -v "$NAME-cache:/var/www/html/cache" -v "$NAME-custom:/var/www/html/site_config/custom" "$IMG" >/dev/null
 
+# Podman ignores HEALTHCHECK in OCI-format images, so fall back to the same probe the image uses.
+health() {
+  s=$("$CTR" inspect -f '{{.State.Health.Status}}' "$NAME" 2>/dev/null)
+  if [ -n "$s" ] && [ "$s" != "<nil>" ]; then echo "$s"; return; fi
+  if "$CTR" exec "$NAME" php -r '$f = @fsockopen("127.0.0.1", 8080, $e, $s, 3); exit($f ? 0 : 1);' >/dev/null 2>&1; then
+    echo healthy
+  else
+    echo unhealthy
+  fi
+}
+
 for i in $(seq 1 30); do
-  [ "$("$CTR" inspect -f '{{.State.Health.Status}}' "$NAME")" = healthy ] && break
+  [ "$(health)" = healthy ] && break
   sleep 2
 done
-check "container is healthy" '[ "$("$CTR" inspect -f "{{.State.Health.Status}}" "$NAME")" = healthy ]'
+check "container is healthy" '[ "$(health)" = healthy ]'
 
 ex() { "$CTR" exec "$NAME" sh -c "$1"; }
 http() { ex "curl -s -o /tmp/body -w '%{http_code}' \"$1\"" 2>/dev/null || ex "php -r '
@@ -60,7 +71,7 @@ check "extract.php rejects loopback with 400" '[ "$(http "$BASE/extract.php?url=
 check "/cache is not served" '[ "$(http $BASE/cache/)" = 403 ]'
 check "/site_config is not served" '[ "$(http $BASE/site_config/)" = 403 ]'
 check "admin is disabled without a password" 'ex "php -r \"require \\\"/var/www/html/config.php\\\"; exit(\\\$options->admin_credentials[\\\"password\\\"]===\\\"\\\" ? 0 : 1);\""'
-check "still healthy after requests" '[ "$("$CTR" inspect -f "{{.State.Health.Status}}" "$NAME")" = healthy ]'
+check "still healthy after requests" '[ "$(health)" = healthy ]'
 
 changed=$("$CTR" diff "$NAME" | grep -vE ' /(tmp|run|var/lock|var/www/html/cache|var/www/html/site_config/custom)(/|$)' | grep -vE ' /(run|var/lock|var/run)' || true)
 check "no filesystem changes outside intended paths" '[ -z "$changed" ]'
