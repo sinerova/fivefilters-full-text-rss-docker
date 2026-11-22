@@ -33,7 +33,7 @@ trap cleanup EXIT
 health() {
   s=$("$CTR" inspect -f '{{.State.Health.Status}}' "$NAME" 2>/dev/null)
   if [ -n "$s" ] && [ "$s" != "<nil>" ]; then echo "$s"; return; fi
-  if "$CTR" exec "$NAME" php -r '$f = @fsockopen("127.0.0.1", 8080, $e, $s, 3); exit($f ? 0 : 1);' >/dev/null 2>&1; then
+  if "$CTR" exec "$NAME" php -r '$c=stream_context_create(["http"=>["timeout"=>3,"ignore_errors"=>true]]); $b=@file_get_contents("http://127.0.0.1:8080/robots.txt",false,$c); exit(($b!==false && isset($http_response_header[0]) && strpos($http_response_header[0]," 200 ")!==false)?0:1);' >/dev/null 2>&1; then
     echo healthy
   else
     echo unhealthy
@@ -70,6 +70,17 @@ check "blocked body is generic" '[ "$(ex "cat /tmp/body")" = "This URL cannot be
 check "extract.php rejects loopback with 400" '[ "$(http "$BASE/extract.php?url=http://127.0.0.1/")" = 400 ]'
 check "/cache is not served" '[ "$(http $BASE/cache/)" = 403 ]'
 check "/site_config is not served" '[ "$(http $BASE/site_config/)" = 403 ]'
+check "/libraries is not served" '[ "$(http $BASE/libraries/)" = 403 ]'
+check "/libraries PHP file is not served" '[ "$(http $BASE/libraries/simplepie/autoloader.php)" = 403 ]'
+check "/cleancache.php is not served" '[ "$(http $BASE/cleancache.php)" = 403 ]'
+check "/config.php is not served" '[ "$(http $BASE/config.php)" = 403 ]'
+check "/custom_config.php is not served" '[ "$(http $BASE/custom_config.php)" = 403 ]'
+check "/ubuntu-16.04.pp is not served" '[ "$(http $BASE/ubuntu-16.04.pp)" = 403 ]'
+check "/changelog.txt is not served" '[ "$(http $BASE/changelog.txt)" = 403 ]'
+check "/UPDATING.txt is not served" '[ "$(http $BASE/UPDATING.txt)" = 403 ]'
+check "/README.txt is not served" '[ "$(http $BASE/README.txt)" = 403 ]'
+check "/admin/require_login.php is not served" '[ "$(http $BASE/admin/require_login.php)" = 403 ]'
+check "build toolchain is purged from runtime image" '! ex "command -v gcc || command -v g++ || command -v make || test -e /usr/src/php.tar.xz"'
 check "admin is disabled without a password" 'ex "php -r \"require \\\"/var/www/html/config.php\\\"; exit(\\\$options->admin_credentials[\\\"password\\\"]===\\\"\\\" ? 0 : 1);\""'
 check "still healthy after requests" '[ "$(health)" = healthy ]'
 

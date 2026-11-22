@@ -47,22 +47,37 @@ final class FeedOutputTest extends TestCase
         self::$staged = null;
     }
 
-    private static function render(string $feedUrl, array $params = array()): string
-    {
+    private static function render(
+        string $feedUrl,
+        array $params = array(),
+        array $serverOverrides = array(),
+        array $envOverrides = array(),
+        string $entryScript = 'makefulltextfeed.php'
+    ): string {
         $script = tempnam(sys_get_temp_dir(), 'ftr');
         $allowed = var_export(array(FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT), true);
         $app = var_export(self::$staged, true);
         $query = var_export(array_merge(array('url' => $feedUrl), $params), true);
+        $server = var_export($serverOverrides, true);
+        $envSetup = '';
+        foreach ($envOverrides as $k => $v) {
+            $envSetup .= 'putenv(' . var_export($k . '=' . $v, true) . ");\n";
+        }
+        $target = var_export('/' . ltrim($entryScript, '/'), true);
         file_put_contents($script, <<<PHP
 <?php
-require {$app} . '/libraries/SafeHttpUrl.php';
+{$envSetup}require {$app} . '/libraries/SafeHttpUrl.php';
 SafeHttpUrl::\$testAllowedHosts = {$allowed};
 \$_GET = \$_REQUEST = {$query};
 \$_SERVER['HTTP_HOST'] = 'localhost';
 \$_SERVER['SERVER_NAME'] = 'localhost';
-\$_SERVER['REQUEST_URI'] = '/makefulltextfeed.php';
+\$_SERVER['SCRIPT_NAME'] = {$target};
+\$_SERVER['REQUEST_URI'] = {$target};
+foreach ({$server} as \$_k => \$_v) {
+    \$_SERVER[\$_k] = \$_v;
+}
 chdir({$app});
-include {$app} . '/makefulltextfeed.php';
+include {$app} . {$target};
 PHP);
         $devnull = DIRECTORY_SEPARATOR === '\\' ? 'NUL' : '/dev/null';
         $cmd = escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -d error_reporting=E_ALL^E_DEPRECATED '
@@ -278,15 +293,149 @@ PHP);
         $this->assertDoesNotMatchRegularExpression('/<(og|twitter):/', $xml);
     }
 
-    public function testJsonpWrapsTheCallback(): void
+    public function testJsonpIsDisabledByDefault(): void
     {
-        $out = self::render('http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/feed.xml', array('format' => 'json', 'callback' => 'ftrCb'));
-        $this->assertStringStartsWith('ftrCb(', $out);
+        $out = self::render(
+            'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/feed.xml',
+            array('format' => 'json', 'callback' => 'ftrCb')
+        );
+        $this->assertStringStartsNotWith('ftrCb(', $out, 'JSONP must be disabled by default');
+        $this->assertStringContainsString('JSONP', $out);
+    }
+
+    public function testJsonpWhenExplicitlyEnabledValidatesCallbackStrictly(): void
+    {
+        $feedUrl = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/feed.xml';
+        $env = array('ftr_allow_jsonp' => 'true');
+
+        $out = self::render($feedUrl, array('format' => 'json', 'callback' => 'ns.ftrCb_1'), array(), $env);
+        $this->assertStringStartsWith('ns.ftrCb_1(', $out);
         $this->assertStringEndsWith(');', rtrim($out));
-        $inner = substr(trim($out), strlen('ftrCb('), -2);
+        $inner = substr(trim($out), strlen('ns.ftrCb_1('), -2);
         $doc = json_decode($inner, true);
         $this->assertIsArray($doc, 'JSONP payload must be valid JSON');
         $this->assertSame('Item ü & one', $doc['rss']['channel']['item']['title']);
+
+        // Old regex allowed arbitrary JS expressions inside quoted bracket notation: foo["x"+alert(1)+""]
+        $bypass = 'foo["x"+alert(1)+""]';
+        $bad = self::render($feedUrl, array('format' => 'json', 'callback' => $bypass), array(), $env);
+        $this->assertStringNotContainsString('alert(1)', $bad);
+        $this->assertStringContainsString('Invalid JSONP callback', $bad);
+
+        $bad2 = self::render($feedUrl, array('format' => 'json', 'callback' => 'alert(1)//'), array(), $env);
+        $this->assertStringContainsString('Invalid JSONP callback', $bad2);
+    }
+
+    public function testHostileFeedExtractedTitlesAndJavascriptLinksAreSanitized(): void
+    {
+        $base = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT;
+
+        // Feed mode with use_extracted_title=1 exercises $extracted_title and javascript: links.
+        $xml = self::render($base . '/hostile-feed.xml', array('use_extracted_title' => '1'));
+        $dom = new DOMDocument();
+        $this->assertTrue($dom->loadXML($xml), 'hostile feed output must be valid XML');
+        $this->assertDoesNotMatchRegularExpression('/(?<!denied:)javascript:/i', $xml);
+        $xp = new DOMXPath($dom);
+        foreach ($xp->query('//link | //guid | //*[local-name()="identifier"] | //*[local-name()="link"]/@href') as $node) {
+            $this->assertDoesNotMatchRegularExpression('/^\s*(javascript|data|vbscript):/i', $node->nodeValue);
+        }
+        foreach ($xp->query('//title') as $t) {
+            $this->assertStringNotContainsString('<img', $t->textContent);
+            $this->assertStringNotContainsString('<script', $t->textContent);
+            $this->assertStringNotContainsString('onerror', $t->textContent);
+        }
+
+        // Single-page dummy feed mode exercises lines 888-889 ($output->setTitle / $newitem->setTitle).
+        $singleXml = self::render($base . '/hostile-article.html');
+        $singleDom = new DOMDocument();
+        $this->assertTrue($singleDom->loadXML($singleXml));
+        $this->assertDoesNotMatchRegularExpression('/(?<!denied:)javascript:/i', $singleXml);
+        $xp2 = new DOMXPath($singleDom);
+        foreach ($xp2->query('//title') as $t) {
+            $this->assertSame('Hostile Extracted Title', trim($t->textContent));
+        }
+    }
+
+    public function testUntitledAndFailedExtractionFeedStillRendersValidRssAndJson(): void
+    {
+        $base = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT;
+
+        $xml = self::render($base . '/untitled-fail-feed.xml');
+        $dom = new DOMDocument();
+        $this->assertTrue($dom->loadXML($xml), 'untitled + failed extraction must still produce valid XML');
+        $sp = new SimplePie();
+        $sp->set_raw_data($xml);
+        $sp->enable_cache(false);
+        $this->assertTrue($sp->init(), (string)$sp->error());
+
+        $json = self::render($base . '/untitled-fail-feed.xml', array('format' => 'json'));
+        $doc = json_decode($json, true);
+        $this->assertIsArray($doc, 'untitled + failed extraction JSON must decode');
+
+        $simple = self::render($base . '/gone.html', array(), array(), array(), 'extract.php');
+        $simpleDoc = json_decode($simple, true);
+        $this->assertIsArray($simpleDoc, 'extract.php on 404 target must still return valid JSON');
+    }
+
+    public function testMultipagePaginationLoopIsBounded(): void
+    {
+        $base = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT;
+        $ruleFile = self::$staged . '/site_config/custom/' . FTR_FIXTURE_HOST . '.txt';
+        @mkdir(dirname($ruleFile), 0777, true);
+        file_put_contents($ruleFile, "body: //article\nnext_page_link: //a[@rel='next']/@href\n");
+        try {
+            $xml = self::render($base . '/page-loop?p=1');
+        } finally {
+            @unlink($ruleFile);
+        }
+        $dom = new DOMDocument();
+        $this->assertTrue($dom->loadXML($xml), 'bounded multipage output must be valid XML');
+        $this->assertStringContainsString('PageMarker-1', $xml);
+        $this->assertStringContainsString('PageMarker-2', $xml);
+        $this->assertStringNotContainsString('PageMarker-25', $xml, 'multipage traversal must stop at the configured page cap');
+    }
+
+    public function testExcessiveFeedEntriesAreCappedByDefaultAndMaxEntries(): void
+    {
+        $base = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT;
+
+        $defaultXml = self::render($base . '/many-feed.xml');
+        $dom1 = new DOMDocument();
+        $this->assertTrue($dom1->loadXML($defaultXml));
+        $defaultCount = $dom1->getElementsByTagName('item')->length;
+        $this->assertGreaterThan(0, $defaultCount);
+        $this->assertLessThanOrEqual(10, $defaultCount, 'default_entries should cap unparameterized feed fetches conservatively');
+
+        $maxXml = self::render($base . '/many-feed.xml', array('max' => '999'));
+        $dom2 = new DOMDocument();
+        $this->assertTrue($dom2->loadXML($maxXml));
+        $maxCount = $dom2->getElementsByTagName('item')->length;
+        $this->assertGreaterThan($defaultCount, $maxCount);
+        $this->assertLessThanOrEqual(25, $maxCount, 'max_entries should cap &max=999 below the 40-item fixture');
+
+        // &max=0 must NOT trigger SimplePie::get_items(0, 0) unbounded slice.
+        $zeroXml = self::render($base . '/many-feed.xml', array('max' => '0'));
+        $dom3 = new DOMDocument();
+        $this->assertTrue($dom3->loadXML($zeroXml));
+        $this->assertSame(1, $dom3->getElementsByTagName('item')->length, '&max=0 must clamp to 1, not return all items');
+    }
+
+    public function testUntrustedForwardedAndHostHeadersAreNotTrustedByDefault(): void
+    {
+        $base = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT;
+        $xml = self::render(
+            $base . '/feed.xml',
+            array(),
+            array(
+                'HTTP_HOST' => "evil.example.org\"><script>alert(1)</script>",
+                'SERVER_NAME' => 'localhost',
+                'SERVER_PORT' => '8080',
+                'HTTP_X_FORWARDED_PROTO' => 'https',
+                'REMOTE_ADDR' => '203.0.113.9',
+            )
+        );
+        $this->assertStringNotContainsString('evil.example.org', $xml, 'untrusted Host header must not poison self links');
+        $this->assertStringNotContainsString('https://localhost', $xml, 'untrusted X-Forwarded-Proto must not flip scheme to https');
     }
 
     public function testEndpointRssIsReadableBySimplePie(): void

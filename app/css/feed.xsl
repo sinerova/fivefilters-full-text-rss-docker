@@ -12,7 +12,7 @@
   <body>
     <div id="explanation" dir="auto">
       <h1><xsl:value-of select="$title"/> <span class="small"> (full-text feed)</span></h1>
-      <p>You are viewing an auto-generated full-text <acronym title="Really Simple Syndication">RSS</acronym> feed. RSS feeds allow you to stay up to date with the latest news and features you want from websites.<br /><a href="{$subscribe}">Subscribe to this feed.</a></p>
+      <p>You are viewing an auto-generated full-text <acronym title="Really Simple Syndication">RSS</acronym> feed. RSS feeds allow you to stay up to date with the latest news and features you want from websites.<xsl:if test="starts-with(normalize-space($subscribe), 'http://') or starts-with(normalize-space($subscribe), 'https://')"><br /><a href="{normalize-space($subscribe)}" rel="noopener noreferrer">Subscribe to this feed.</a></xsl:if></p>
       <p>Below is the latest content available from this feed.</p>
     </div>
     
@@ -20,11 +20,19 @@
     <ul>
       <xsl:for-each select="rss/channel/item">
       <div class="article">
-        <li><a href="{link}" rel="bookmark"><xsl:value-of disable-output-escaping="yes" select="title"/></a>
+        <li>
+          <xsl:choose>
+            <xsl:when test="starts-with(normalize-space(link), 'http://') or starts-with(normalize-space(link), 'https://')">
+              <a href="{normalize-space(link)}" rel="bookmark noopener noreferrer"><xsl:value-of select="title"/></a>
+            </xsl:when>
+            <xsl:otherwise>
+              <strong><xsl:value-of select="title"/></strong>
+            </xsl:otherwise>
+          </xsl:choose>
 			<div>
 			<xsl:choose>
-				<xsl:when test="content:encoded"><xsl:value-of disable-output-escaping="yes" select="content:encoded" /></xsl:when>
-				<xsl:when test="description"><xsl:value-of disable-output-escaping="yes" select="description" /></xsl:when>
+				<xsl:when test="content:encoded"><xsl:value-of select="content:encoded" /></xsl:when>
+				<xsl:when test="description"><xsl:value-of select="description" /></xsl:when>
 			</xsl:choose>
 			</div>
 		</li>        

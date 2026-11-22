@@ -35,7 +35,6 @@ if (PHP_VERSION_ID < 80000) libxml_disable_entity_loader(true);
 // Never send errors to clients (path/stack-trace disclosure, corrupts XML output); log instead.
 ini_set("display_errors", 0);
 ini_set("log_errors", 1);
-@set_time_limit(120);
 
 if (!defined('_FF_FTR_MODE')) define('_FF_FTR_MODE', 'full');
 
@@ -110,7 +109,7 @@ header('X-Robots-Tag: noindex, nofollow');
 ////////////////////////////////
 // Content security headers
 ////////////////////////////////
-header("Content-Security-Policy: script-src 'self'; connect-src 'none'; font-src 'none'; style-src 'self'");
+header("Content-Security-Policy: default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; style-src 'self'; img-src http: https:");
 
 ////////////////////////////////
 // Check if service is enabled
@@ -135,7 +134,8 @@ if (isset($_REQUEST['debug'])) {
 	if ($options->debug === true || $options->debug == 'user') {
 		$debug_mode = true;
 	} elseif ($options->debug == 'admin') {
-		session_start();
+		require_once dirname(__FILE__).'/admin/session_csrf.php';
+		ftr_start_session($options);
 		$debug_mode = (@$_SESSION['auth'] == 1);
 	}
 	if ($debug_mode) {
@@ -285,17 +285,19 @@ if (!isset($_REQUEST['inputhtml']) && SafeHttpUrl::resolve($url) === false) {
 if (isset($_REQUEST['max'])) {
 	$max = (int)$_REQUEST['max'];
 	if ($valid_key) {
-		$max = min($max, $options->max_entries_with_key);
+		$max = min($max, (int)$options->max_entries_with_key);
 	} else {
-		$max = min($max, $options->max_entries);
+		$max = min($max, (int)$options->max_entries);
 	}
 } else {
 	if ($valid_key) {
-		$max = $options->default_entries_with_key;
+		$max = (int)$options->default_entries_with_key;
 	} else {
-		$max = $options->default_entries;
+		$max = (int)$options->default_entries;
 	}
 }
+// SimplePie::get_items(0, 0) returns ALL items unbounded; always clamp >= 1.
+$max = max(1, $max);
 
 ///////////////////////////////////////////////
 // Link handling
@@ -415,17 +417,33 @@ if (!$xss_filter && (isset($_REQUEST['xss']) && $_REQUEST['xss'] !== '0')) {
 }
 
 /////////////////////////////////////
-// Check for JSONP
-// Regex from https://gist.github.com/1217080
+// Check for JSONP (disabled by default)
 /////////////////////////////////////
 $callback = null;
-if ($format =='json' && isset($_REQUEST['callback'])) {
-	$callback = trim($_REQUEST['callback']);
+if ($format == 'json' && isset($_REQUEST['callback']) && $_REQUEST['callback'] !== '') {
+	if (empty($options->allow_jsonp)) {
+		http_response_code(400);
+		die('JSONP is disabled');
+	}
+	$callback = trim((string)$_REQUEST['callback']);
+	if (strlen($callback) > 128 || !preg_match('/^[a-zA-Z_$][0-9a-zA-Z_$]*(?:\.[a-zA-Z_$][0-9a-zA-Z_$]*)*$/', $callback)) {
+		http_response_code(400);
+		die('Invalid JSONP callback');
+	}
+	$_reserved_js = array(
+		'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete',
+		'do', 'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if',
+		'implements', 'import', 'in', 'instanceof', 'interface', 'let', 'new', 'null', 'package',
+		'private', 'protected', 'public', 'return', 'static', 'super', 'switch', 'this', 'throw',
+		'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield'
+	);
 	foreach (explode('.', $callback) as $_identifier) {
-		if (!preg_match('/^[a-zA-Z_$][0-9a-zA-Z_$]*(?:\[(?:".+"|\'.+\'|\d+)\])*?$/', $_identifier)) {
+		if (in_array($_identifier, $_reserved_js, true)) {
+			http_response_code(400);
 			die('Invalid JSONP callback');
 		}
 	}
+	unset($_reserved_js, $_identifier);
 	debug("JSONP callback: $callback");
 }
 
@@ -491,7 +509,32 @@ if (isset($_REQUEST['inputhtml']) && _FF_FTR_MODE == 'simple') {
 //////////////////////////////////
 if ($options->caching) {
 	debug('Caching is enabled...');
-	$cache_id = md5($max.$url.(int)$valid_key.$accept.$links.$images.(int)$favour_feed_titles.(int)$options->content.(int)$options->html5_output.(int)$options->summary.(int)$xss_filter.(int)$favour_effective_url.(int)$exclude_on_fail.$format.$detect_language.$parser.$user_submitted_config._FF_FTR_MODE);
+	$cache_id = hash('sha256', json_encode(array(
+		'v' => 2,
+		'max' => (int)$max,
+		'url' => (string)$url,
+		'valid_key' => (bool)$valid_key,
+		'accept' => (string)$accept,
+		'links' => (string)$links,
+		'images' => (bool)$images,
+		'favour_feed_titles' => (bool)$favour_feed_titles,
+		'content' => (bool)$options->content,
+		'html5_output' => (bool)$options->html5_output,
+		'summary' => (bool)$options->summary,
+		'xss_filter' => (bool)$xss_filter,
+		'favour_effective_url' => (bool)$favour_effective_url,
+		'exclude_on_fail' => (bool)$exclude_on_fail,
+		'format' => (string)$format,
+		'detect_language' => (string)$detect_language,
+		'parser' => (string)$parser,
+		'user_submitted_config' => (string)$user_submitted_config,
+		'mode' => (string)_FF_FTR_MODE,
+		'multipage' => (bool)$options->multipage,
+		'max_multipage' => (int)($options->max_multipage ?? 10),
+		'singlepage' => (bool)$options->singlepage,
+		'keep_enclosures' => (bool)$options->keep_enclosures,
+		'remove_native_ads' => (bool)$options->remove_native_ads,
+	)));
 	$check_cache = true;
 	if ($options->apc && $options->smart_cache) {
 		apc_add("cache.$cache_id", 0, $options->cache_time*60);
@@ -517,6 +560,7 @@ if ($options->caching) {
 				} else {
 					header('Content-type: application/javascript; charset=UTF-8');
 				}
+				header('X-content-type-options: nosniff');
 			} else {
 				header('Content-type: text/xml; charset=UTF-8');
 				header('X-content-type-options: nosniff');
@@ -550,9 +594,14 @@ if (isset($_REQUEST['inputhtml']) && _FF_FTR_MODE == 'simple') {
 	// the given HTML (it will always return this HTML)
 	$http = new HumbleHttpAgentDummy($_REQUEST['inputhtml']);
 } else {
-	$_req_options = null;
+	$_req_options = array(
+		'timeout' => max(1, (int)($options->http_timeout ?? 15)),
+		'max_response_bytes' => max(1024, (int)($options->max_response_bytes ?? HumbleHttpAgent::MAX_RESPONSE_BYTES)),
+		'max_redirects' => max(0, min(10, (int)($options->max_redirects ?? HumbleHttpAgent::MAX_REDIRECTS))),
+		'max_parallel_requests' => max(1, min(20, (int)($options->max_parallel_requests ?? 5))),
+	);
 	if ($proxy !== false) {
-		$_req_options = array('proxyhost' => $proxy['host']);
+		$_req_options['proxyhost'] = $proxy['host'];
 		if (isset($proxy['auth'])) {
 			$_req_options['proxyauth'] = $proxy['auth'];
 		}
@@ -668,8 +717,8 @@ $output = new FeedWriter();
 if (_FF_FTR_MODE === 'simple') $output->enableSimpleJson();
 //$feed_title = $feed->get_title();
 //echo $feed_title; exit;
-$output->setTitle(strip_tags(htmlspecialchars_decode((string)$feed->get_title())));
-$output->setDescription(strip_tags(htmlspecialchars_decode((string)$feed->get_description())));
+$output->setTitle(sanitize_plain_title($feed->get_title()));
+$output->setDescription(sanitize_plain_title($feed->get_description()));
 $output->setXsl('css/feed.xsl'); // Chrome uses this, most browsers ignore it
 $ttl = $feed->get_channel_tags(SIMPLEPIE_NAMESPACE_RSS_20, 'ttl');
 if ($ttl !== null) {
@@ -679,9 +728,9 @@ if ($ttl !== null) {
 $output->setSelf(get_self_url());
 $output->setAlternate($url, 'Source URL');
 $output->setRelated('http://www.subtome.com/#/subscribe?feeds='.urlencode(get_self_url()).'&back='.urlencode(get_self_url()), 'Subscribe to feed');
-$output->setLink($feed->get_link()); // Google Reader uses this for pulling in favicons
-if ($img_url = $feed->get_image_url()) {
-	$output->setImage($feed->get_title(), $feed->get_link(), $img_url);
+$output->setLink(FeedWriter::sanitizeHttpUrl($feed->get_link())); // Google Reader uses this for pulling in favicons
+if (($img_url = FeedWriter::sanitizeHttpUrl($feed->get_image_url())) !== '') {
+	$output->setImage(sanitize_plain_title($feed->get_title()), FeedWriter::sanitizeHttpUrl($feed->get_link()), $img_url);
 }
 
 ////////////////////////////////////////////
@@ -692,19 +741,19 @@ $items = $feed->get_items(0, $max);
 $urls_sanitized = array();
 $urls = array();
 foreach ($items as $key => $item) {
-	$permalink = htmlspecialchars_decode(trim($item->get_permalink()));
+	$permalink = htmlspecialchars_decode(trim((string)$item->get_permalink()));
 	// Colons in URL path segments get encoded by SimplePie, yet some sites expect them unencoded
 	$permalink = str_replace('%3A', ':', $permalink);
-	// validateUrl() strips non-ascii characters
-	// simplepie already sanitizes URLs so let's not do it again here.
-	//$permalink = $http->validateUrl($permalink);
-	if ($permalink) {
+	$permalink = FeedWriter::sanitizeHttpUrl($permalink);
+	if ($permalink !== '') {
 		if (!url_allowed($permalink)) {
 			debug('URL blocked, skipping...');
 			$permalink = false;
 		} else {
 			$urls_sanitized[] = $permalink;
 		}
+	} else {
+		$permalink = false;
 	}
 	$urls[$key] = $permalink;
 }
@@ -731,14 +780,13 @@ foreach ($items as $key => $item) {
 	$extracted_title = '';
 	$feed_item_title = $item->get_title();
 	if ($feed_item_title !== null) {
-		$feed_item_title = strip_tags(htmlspecialchars_decode($feed_item_title));
+		$feed_item_title = sanitize_plain_title($feed_item_title);
 	}
 	$newitem = $output->createNewItem();
 	$newitem->setTitle($feed_item_title);
-	if ($permalink !== false) {
-		$newitem->setLink($permalink);
-	} else {
-		$newitem->setLink($item->get_permalink());
+	$safe_item_link = ($permalink !== false) ? FeedWriter::sanitizeHttpUrl($permalink) : FeedWriter::sanitizeHttpUrl($item->get_permalink());
+	if ($safe_item_link !== '') {
+		$newitem->setLink($safe_item_link);
 	}
 	// Status codes to accept (200 range)
 	// Some sites might return correct content with error status codes
@@ -759,12 +807,15 @@ foreach ($items as $key => $item) {
 			if ($mime_info['action'] == 'exclude') {
 				continue; // skip this feed item entry
 			} elseif ($mime_info['action'] == 'link') {
+				$_esc_eff_url = htmlspecialchars(FeedWriter::sanitizeHttpUrl($effective_url), ENT_QUOTES, 'UTF-8');
+				$_esc_mime_name = htmlspecialchars((string)$mime_info['name'], ENT_QUOTES, 'UTF-8');
 				if ($mime_info['type'] == 'image') {
-					$html = "<a href=\"$effective_url\"><img src=\"$effective_url\" alt=\"{$mime_info['name']}\" /></a>";
+					$html = "<a href=\"$_esc_eff_url\"><img src=\"$_esc_eff_url\" alt=\"$_esc_mime_name\" /></a>";
 				} else {
-					$html = "<a href=\"$effective_url\">Download {$mime_info['name']}</a>";
+					$html = "<a href=\"$_esc_eff_url\">Download $_esc_mime_name</a>";
 				}
-				$extracted_title = $mime_info['name'];
+				unset($_esc_eff_url, $_esc_mime_name);
+				$extracted_title = sanitize_plain_title($mime_info['name']);
 				$do_content_extraction = false;
 			}
 		}
@@ -780,6 +831,7 @@ foreach ($items as $key => $item) {
 				debug("Here's the raw HTML (after attempted UTF-8 conversion):");
 				die($html);
 			}
+			unset($response);
 			// check site config for single page URL - fetch it if found
 			$is_single_page = false;
 			if ($options->singlepage && ($single_page_response = get_single_page($item, $html, $effective_url))) {
@@ -789,14 +841,18 @@ foreach ($items as $key => $item) {
 				$mime_info = get_mime_action_info($single_page_response['headers']);
 				if (isset($mime_info['action'])) {
 					if ($mime_info['action'] == 'exclude') {
+						unset($single_page_response, $html);
 						continue; // skip this feed item entry
 					} elseif ($mime_info['action'] == 'link') {
+						$_esc_eff_url = htmlspecialchars(FeedWriter::sanitizeHttpUrl($effective_url), ENT_QUOTES, 'UTF-8');
+						$_esc_mime_name = htmlspecialchars((string)$mime_info['name'], ENT_QUOTES, 'UTF-8');
 						if ($mime_info['type'] == 'image') {
-							$html = "<a href=\"$effective_url\"><img src=\"$effective_url\" alt=\"{$mime_info['name']}\" /></a>";
+							$html = "<a href=\"$_esc_eff_url\"><img src=\"$_esc_eff_url\" alt=\"$_esc_mime_name\" /></a>";
 						} else {
-							$html = "<a href=\"$effective_url\">Download {$mime_info['name']}</a>";
+							$html = "<a href=\"$_esc_eff_url\">Download $_esc_mime_name</a>";
 						}
-						$extracted_title = $mime_info['name'];
+						unset($_esc_eff_url, $_esc_mime_name);
+						$extracted_title = sanitize_plain_title($mime_info['name']);
 						$do_content_extraction = false;
 					}
 				}
@@ -809,11 +865,14 @@ foreach ($items as $key => $item) {
 				}
 				unset($single_page_response);
 			}
+		} else {
+			unset($response);
 		}
 		if ($do_content_extraction) {
 			debug('--------');
 			debug('Attempting to extract content');
 			$extract_result = $extractor->process($html, $effective_url);
+			unset($html);
 			$readability = $extractor->readability;
 			// if user has asked to see parsed HTML, show it and exit.
 			if ($debug_show_parsed_html) {
@@ -830,41 +889,74 @@ foreach ($items as $key => $item) {
 			$base_url = get_base_url($readability->dom, $effective_url);
 			if (!$base_url) $base_url = $effective_url;
 			$content_block = ($extract_result) ? $extractor->getContent() : null;			
-			$extracted_title = ($extract_result) ? $extractor->getTitle() : '';
+			$extracted_title = ($extract_result) ? sanitize_plain_title($extractor->getTitle()) : '';
 			// Deal with multi-page articles
 			//die('Next: '.$extractor->getNextPageUrl());
+			$max_multipage = isset($options->max_multipage) ? max(0, (int)$options->max_multipage) : 10;
 			$is_multi_page = (!$is_single_page && $extract_result && $extractor->getNextPageUrl());
-			if ($options->multipage && $is_multi_page && $options->content) {
+			if ($options->multipage && $max_multipage > 0 && $is_multi_page && $options->content) {
 				debug('--------');
 				debug('Attempting to process multi-page article');
 				$multi_page_urls = array();
+				$seen_page_urls = array($effective_url);
 				$multi_page_content = array();
-				while ($next_page_url = $extractor->getNextPageUrl()) {
+				$_page_base_url = $base_url;
+				while (count($multi_page_urls) < $max_multipage && ($next_page_url = $extractor->getNextPageUrl())) {
 					debug('--------');
 					debug('Processing next page: '.$next_page_url);
-					// If we've got URL, resolve against $base_url
-					if ($next_page_url = make_absolute_str($base_url, $next_page_url)) {
-						// check it's not what we have already!
-						if (!in_array($next_page_url, $multi_page_urls)) {
-							// it's not, so let's attempt to fetch it
-							$multi_page_urls[] = $next_page_url;						
+					// If we've got URL, resolve against $_page_base_url
+					if ($next_page_url = make_absolute_str($_page_base_url, $next_page_url)) {
+						// Stop cleanly without discarding prior pages if pagination loops back to a seen page
+						if (in_array($next_page_url, $seen_page_urls, true)) {
+							debug('URL already processed (pagination cycle), stopping multipage traversal');
+							break;
+						}
+						if (url_allowed($next_page_url)) {
+							$seen_page_urls[] = $next_page_url;
+							$multi_page_urls[] = $next_page_url;
 							$_prev_ref = $http->referer;
-							if (($response = $http->get($next_page_url, true)) && $response['status_code'] < 300) {
+							$response_next = $http->get($next_page_url, true);
+							$http->referer = $_prev_ref;
+							if ($response_next && $response_next['status_code'] < 300) {
+								$_next_eff_url = !empty($response_next['effective_url']) ? $response_next['effective_url'] : $next_page_url;
+								if ($_next_eff_url !== $next_page_url) {
+									if (in_array($_next_eff_url, $seen_page_urls, true)) {
+										unset($response_next);
+										debug('Redirected URL already processed (pagination cycle), stopping multipage traversal');
+										break;
+									}
+									$seen_page_urls[] = $_next_eff_url;
+								}
 								// make sure mime type is not something with a different action associated
-								$page_mime_info = get_mime_action_info($response['headers']);
+								$page_mime_info = get_mime_action_info($response_next['headers']);
 								if (!isset($page_mime_info['action'])) {
-									$html = $response['body'];
+									$_next_html = $response_next['body'];
+									$_next_headers = $response_next['headers'];
+									unset($response_next);
 									// remove strange things
-									$html = str_replace('</[>', '', $html);
-									$html = convert_to_utf8($html, $response['headers']);
-									if ($extractor->process($html, $next_page_url)) {
-										$multi_page_content[] = $extractor->getContent();
+									$_next_html = str_replace('</[>', '', $_next_html);
+									$_next_html = convert_to_utf8($_next_html, $_next_headers);
+									unset($_next_headers);
+									$_proc_ok = $extractor->process($_next_html, $_next_eff_url);
+									unset($_next_html);
+									if ($_proc_ok) {
+										$_next_base = get_base_url($extractor->readability->dom, $_next_eff_url);
+										$_page_base_url = $_next_base ? $_next_base : $_next_eff_url;
+										if ($options->rewrite_relative_urls) {
+											$_next_content = $extractor->getContent();
+											make_absolute($_page_base_url, $_next_content);
+											$multi_page_content[] = $_next_content;
+											unset($_next_content);
+										} else {
+											$multi_page_content[] = $extractor->getContent();
+										}
 										continue;
 									} else { debug('Failed to extract content'); }
 								} else { debug('MIME type requires different action'); }
 							} else { debug('Failed to fetch URL'); }
-						} else { debug('URL already processed'); }
-					} else { debug('Failed to resolve against '.$effective_url); }
+							unset($response_next);
+						} else { debug('Next-page URL blocked by policy'); }
+					} else { debug('Failed to resolve against '.$_page_base_url); }
 					// failed to process next_page_url, so cancel further requests
 					$multi_page_content = array();
 					break;
@@ -880,7 +972,7 @@ foreach ($items as $key => $item) {
 					$_page = $content_block->ownerDocument->importNode($_page, true);
 					$content_block->appendChild($_page);
 				}
-				unset($multi_page_urls, $multi_page_content, $page_mime_info, $next_page_url, $_page);
+				unset($multi_page_urls, $seen_page_urls, $multi_page_content, $page_mime_info, $next_page_url, $_page, $_page_base_url, $_next_eff_url, $_next_base, $_proc_ok);
 			}
 		}
 		// use extracted title for both feed and item title if we're using single-item dummy feed
@@ -974,21 +1066,25 @@ foreach ($items as $key => $item) {
 	}
 
 	// guid
-	$_guid = $item->get_permalink();
-	$_ispermalink = 'true';
+	$_guid = $safe_item_link;
+	$_ispermalink = ($_guid !== '') ? 'true' : null;
 	$_g = $item->get_item_tags('', 'guid');
 	if (is_array($_g) && count($_g) > 0) {
 		$_ispermalink = null;
-		$_guid = $_g[0]['data'];
+		$_guid = trim((string)$_g[0]['data']);
 		if (isset($_g[0]['attribs']) && isset($_g[0]['attribs']['']) && isset($_g[0]['attribs']['']['isPermaLink'])) {
-			$_ispermalink = $_g[0]['attribs']['']['isPermaLink'];
-			if ($_ispermalink !== 'true') $_ispermalink = 'false';
+			$_ispermalink = ($_g[0]['attribs']['']['isPermaLink'] === 'true' && FeedWriter::sanitizeHttpUrl($_guid) !== '') ? 'true' : 'false';
+		}
+		if (preg_match('/^\s*(javascript|data|vbscript):/i', $_guid)) {
+			$_guid = '';
 		}
 	}
-	if (isset($_ispermalink)) {
-		$newitem->addElement('guid', $_guid, array('isPermaLink'=>$_ispermalink));
-	} else {
-		$newitem->addElement('guid', $_guid);
+	if ($_guid !== '') {
+		if (isset($_ispermalink)) {
+			$newitem->addElement('guid', $_guid, array('isPermaLink'=>$_ispermalink));
+		} else {
+			$newitem->addElement('guid', $_guid);
+		}
 	}
 	unset($_g, $_guid, $_ispermalink);
 	
@@ -1105,13 +1201,15 @@ foreach ($items as $key => $item) {
 	if (isset($mime_info['mime'])) $newitem->addElement('dc:format', $mime_info['mime']);
 	// add effective URL (URL after redirects)
 	if (isset($effective_url)) {
-		//TODO: ensure $effective_url is valid witout - sometimes it causes problems, e.g.
-		//http://www.siasat.pk/forum/showthread.php?108883-Pakistan-Chowk-by-Rana-Mubashir-–-25th-March-2012-Special-Program-from-Liari-(Karachi)
-		//temporary measure: use utf8_encode()
-		$newitem->addElement('dc:identifier', remove_url_cruft(utf8_encode($effective_url)));
-		if ($favour_effective_url) $newitem->setLink(remove_url_cruft(utf8_encode($effective_url)));
-	} else {
-		$newitem->addElement('dc:identifier', remove_url_cruft($item->get_permalink()));
+		$_eff_utf8 = mb_check_encoding($effective_url, 'UTF-8') ? $effective_url : mb_convert_encoding($effective_url, 'UTF-8', 'ISO-8859-1');
+		$_eff_clean = FeedWriter::sanitizeHttpUrl(remove_url_cruft($_eff_utf8));
+		if ($_eff_clean !== '') {
+			$newitem->addElement('dc:identifier', $_eff_clean);
+			if ($favour_effective_url) $newitem->setLink($_eff_clean);
+		}
+		unset($_eff_utf8, $_eff_clean);
+	} elseif ($safe_item_link !== '') {
+		$newitem->addElement('dc:identifier', remove_url_cruft($safe_item_link));
 	}
 	// is this a native ad?
 	if ($extractor->isNativeAd()) {
@@ -1133,13 +1231,17 @@ foreach ($items as $key => $item) {
 			foreach ($enclosures as $enclosure) {
 				// thumbnails
 				foreach ((array)$enclosure->get_thumbnails() as $thumbnail) {
-					$newitem->addElement('media:thumbnail', '', array('url'=>$thumbnail));
+					$_thumb = FeedWriter::sanitizeHttpUrl($thumbnail);
+					if ($_thumb !== '') {
+						$newitem->addElement('media:thumbnail', '', array('url'=>$_thumb));
+					}
 				}
-				if (!$enclosure->get_link()) continue;
+				$_enc_link = FeedWriter::sanitizeHttpUrl($enclosure->get_link());
+				if ($_enc_link === '') continue;
 				$enc = array();
 				// Media RSS spec ($enc): http://search.yahoo.com/mrss
 				// SimplePie methods ($enclosure): http://simplepie.org/wiki/reference/start#methods4
-				$enc['url'] = $enclosure->get_link();
+				$enc['url'] = $_enc_link;
 				if ($enclosure->get_length()) $enc['fileSize'] = $enclosure->get_length();
 				if ($enclosure->get_type()) $enc['type'] = $enclosure->get_type();
 				if ($enclosure->get_medium()) $enc['medium'] = $enclosure->get_medium();
@@ -1157,7 +1259,7 @@ foreach ($items as $key => $item) {
 		}
 	}
 	$output->addItem($newitem);
-	unset($html);
+	unset($html, $response, $content_block);
 	$item_count++;
 }
 
@@ -1216,13 +1318,62 @@ if (!$debug_mode) {
 // HELPER FUNCTIONS
 ///////////////////////////////
 
+function sanitize_plain_title($text) {
+	if ($text === null) return '';
+	$decoded = htmlspecialchars_decode((string)$text, ENT_QUOTES);
+	return trim(strip_tags($decoded));
+}
+
+function get_trusted_base_url() {
+	global $options;
+	if (!empty($options->public_url)) {
+		$pub = FeedWriter::sanitizeHttpUrl((string)$options->public_url);
+		if ($pub !== '') {
+			return rtrim($pub, '/');
+		}
+	}
+	$scheme = is_ssl() ? 'https://' : 'http://';
+	$host = '';
+	if (!empty($options->trust_forwarded_headers)) {
+		if (!empty($_SERVER['HTTP_X_FORWARDED_HOST'])) {
+			$candidate = trim(explode(',', (string)$_SERVER['HTTP_X_FORWARDED_HOST'])[0]);
+			if (preg_match('/^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.\-]+)(?::\d{1,5})?$/', $candidate)) {
+				$host = $candidate;
+			}
+		}
+		if ($host === '' && !empty($_SERVER['HTTP_HOST'])) {
+			$candidate = trim((string)$_SERVER['HTTP_HOST']);
+			if (preg_match('/^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.\-]+)(?::\d{1,5})?$/', $candidate)) {
+				$host = $candidate;
+			}
+		}
+	}
+	if ($host === '') {
+		$serverName = isset($_SERVER['SERVER_NAME']) ? trim((string)$_SERVER['SERVER_NAME']) : '';
+		if (!preg_match('/^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.\-]+)$/', $serverName)) {
+			$serverName = 'localhost';
+		}
+		$port = isset($_SERVER['SERVER_PORT']) ? (int)$_SERVER['SERVER_PORT'] : 0;
+		$defaultPort = ($scheme === 'https://') ? 443 : 80;
+		if ($port > 0 && $port <= 65535 && $port !== $defaultPort) {
+			$host = $serverName . ':' . $port;
+		} else {
+			$host = $serverName;
+		}
+	}
+	return $scheme . $host;
+}
+
 function get_self_url() {
 	global $options, $url;
-	$scheme = (is_ssl()) ? 'https://' : 'http://';
-	$host = $_SERVER['HTTP_HOST'];
-	$path = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
+	$base = get_trusted_base_url();
+	$script = isset($_SERVER['SCRIPT_NAME']) ? (string)$_SERVER['SCRIPT_NAME'] : '/makefulltextfeed.php';
+	$path = rtrim(str_replace('\\', '/', dirname($script)), '/');
+	if (!preg_match('!^/[a-zA-Z0-9_./\-]*$!', $path)) {
+		$path = '';
+	}
 	$_qs_url = (strtolower(substr($url, 0, 7)) == 'http://') ? substr($url, 7) : $url;
-	$self = $scheme.htmlspecialchars($host.$path).'/makefulltextfeed.php?url='.urlencode($_qs_url);
+	$self = $base.$path.'/makefulltextfeed.php?url='.urlencode($_qs_url);
 
 	// hide API key if we can
 	if (isset($_GET['key']) && ($key_index = array_search($_GET['key'], $options->api_keys)) !== false) {
@@ -1296,13 +1447,17 @@ function get_base_url($dom, $url=null) {
 }
 
 function is_ssl() {
-	if (isset($_SERVER['HTTPS']) && ($_SERVER['HTTPS'] != '') && ($_SERVER['HTTPS'] != 'off')) {
+	global $options;
+	if (isset($_SERVER['HTTPS']) && ($_SERVER['HTTPS'] != '') && (strtolower((string)$_SERVER['HTTPS']) != 'off')) {
 		return true;
-	} elseif (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] == 'https') {
-		return true;
-	} else {
-		return false;
 	}
+	if (!empty($options->trust_forwarded_headers) && isset($_SERVER['HTTP_X_FORWARDED_PROTO'])) {
+		$proto = strtolower(trim(explode(',', (string)$_SERVER['HTTP_X_FORWARDED_PROTO'])[0]));
+		if ($proto === 'https') {
+			return true;
+		}
+	}
+	return false;
 }
 
 // Adapted from WordPress
@@ -1631,14 +1786,18 @@ function get_cache() {
 			'automatic_cleaning_factor' => $options->cache_cleanup,
 			'ignore_user_abort' => false
 		);
+		$_cdir = ($valid_key) ? $options->cache_dir.'/rss-with-key/' : $options->cache_dir.'/rss/';
+		if (!is_dir($_cdir)) {
+			@mkdir($_cdir, 0750, true);
+		}
 		$backendOptions = array(
-			'cache_dir' => ($valid_key) ? $options->cache_dir.'/rss-with-key/' : $options->cache_dir.'/rss/', // directory where to put the cache files
+			'cache_dir' => $_cdir, // directory where to put the cache files
 			'file_locking' => false,
 			'read_control' => true,
 			'read_control_type' => 'strlen',
 			'hashed_directory_level' => $options->cache_directory_level,
-			'hashed_directory_perm' => 0777,
-			'cache_file_perm' => 0664,
+			'hashed_directory_perm' => 0750,
+			'cache_file_perm' => 0640,
 			'file_name_prefix' => 'ff'
 		);
 		// getting a Zend_Cache_Core object

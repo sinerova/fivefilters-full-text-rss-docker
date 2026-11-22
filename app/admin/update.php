@@ -28,32 +28,51 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // * See section on automatic updates for a URL you can fetch periodically (e.g. with cron) to update site config files
 
 error_reporting(E_ALL ^ E_NOTICE);
-ini_set("display_errors", 1);
-@set_time_limit(120);
+ini_set("display_errors", 0);
+ini_set("log_errors", 1);
 
 ////////////////////////////////
 // Load config file
 ////////////////////////////////
 $admin_page = 'update';
 require_once('../config.php');
+require_once('session_csrf.php');
 require_once('../libraries/humble-http-agent/HumbleHttpAgent.php');
 require_once('../libraries/humble-http-agent/CookieJar.php');
 require_once 'template.php';
-tpl_header('Update site patterns');
 
 //////////////////////////////////
 // Username and password must be available
 //////////////////////////////////
 if (!isset($options->admin_credentials) || $options->admin_credentials['username'] == '' || $options->admin_credentials['password'] == '') {
 	header("X-Robots-Tag: noindex, nofollow", true);
-
+	http_response_code(403);
 	die('<h2>Username and password not set</h2><p>Full-Text RSS has not been configured with admin credentials.</p><p>If you are the administrator, please edit your <tt>custom_config.php</tt> file and enter the credentials in the appropriate section. When you\'ve done that, this page will prompt you for your admin credentials.</p>');
 }
 $admin_hash = sha1($options->admin_credentials['username'].'+'.$options->admin_credentials['password']);
 
-$_self_host = $_SERVER['HTTP_HOST'];
-$_self_path = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
-$self_update_url = 'http://'.htmlspecialchars($_self_host.$_self_path).'/update.php?key='.urlencode($admin_hash);
+$_self_scheme = ftr_is_https($options) ? 'https://' : 'http://';
+$_self_host = '';
+if (!empty($options->trust_forwarded_headers) && !empty($_SERVER['HTTP_HOST'])) {
+	$_candidate = trim((string)$_SERVER['HTTP_HOST']);
+	if (preg_match('/^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.\-]+)(?::\d{1,5})?$/', $_candidate)) {
+		$_self_host = $_candidate;
+	}
+}
+if ($_self_host === '') {
+	$_sname = isset($_SERVER['SERVER_NAME']) ? trim((string)$_SERVER['SERVER_NAME']) : '';
+	if (!preg_match('/^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.\-]+)$/', $_sname)) {
+		$_sname = 'localhost';
+	}
+	$_sport = isset($_SERVER['SERVER_PORT']) ? (int)$_SERVER['SERVER_PORT'] : 0;
+	$_defport = ($_self_scheme === 'https://') ? 443 : 80;
+	$_self_host = ($_sport > 0 && $_sport <= 65535 && $_sport !== $_defport) ? ($_sname.':'.$_sport) : $_sname;
+}
+$_self_path = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/admin/update.php'))), '/');
+if (!preg_match('!^/[a-zA-Z0-9_./\-]*$!', $_self_path)) {
+	$_self_path = '/admin';
+}
+$self_update_url = $_self_scheme.htmlspecialchars($_self_host.$_self_path, ENT_QUOTES, 'UTF-8').'/update.php?key='.urlencode($admin_hash);
 
 $latest_remote = 'https://codeload.github.com/fivefilters/ftr-site-config/zip/master';
 $version = @file_get_contents('../site_config/standard/version.txt');
@@ -64,6 +83,7 @@ $version = @file_get_contents('../site_config/standard/version.txt');
 if (!isset($_REQUEST['key']) || trim($_REQUEST['key']) == '') {
 
 	require_once 'require_login.php';
+	tpl_header('Update site patterns');
 
 	if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 		header('Location: update.php');
@@ -84,15 +104,16 @@ if (!isset($_REQUEST['key']) || trim($_REQUEST['key']) == '') {
 		die('Could not determine current version of your site pattern files (site_config/standard/version.txt). Make sure you\'re using at least version 3.2 of Full-Text RSS.');
 	}
 	?>
-	<p>You have Full-Text RSS <strong><?php echo _FF_FTR_VERSION; ?></strong>
-	(Site Patterns version: <strong><?php echo (isset($version) ? $version : 'Unknown'); ?></strong>)
+	<p>You have Full-Text RSS <strong><?php echo htmlspecialchars((string)_FF_FTR_VERSION, ENT_QUOTES, 'UTF-8'); ?></strong>
+	(Site Patterns version: <strong><?php echo (isset($version) && $version !== false ? htmlspecialchars(trim((string)$version), ENT_QUOTES, 'UTF-8') : 'Unknown'); ?></strong>)
 	</p>
-	<p>To see if you have the latest versions, <a href="http://fivefilters.org/content-only/latest_version.php?version=<?php echo urlencode(_FF_FTR_VERSION).'&site_config='.urlencode(@$version); ?>">check for updates</a>.</p>
+	<p>To see if you have the latest versions, <a href="http://fivefilters.org/content-only/latest_version.php?version=<?php echo urlencode(_FF_FTR_VERSION).'&site_config='.urlencode((string)@$version); ?>">check for updates</a>.</p>
 	<?php
 	if ($auto) {
 		echo '<p>This update tool will attempt to fetch the latest site patterns from our <a href="https://github.com/fivefilters/ftr-site-config/">GitHub repository</a>.</p>';
 		echo '<p><strong>Important: </strong>if you\'ve modified or added your own config files in the <tt>site_config/standard/</tt> folder, please move them to <tt>site_config/custom/</tt> &mdash; the update process will attempt to replace everything in <tt>site_config/standard/</tt> with our updated version.</p>';
 		echo '<form method="post" action="update.php" class="well">';
+		echo ftr_csrf_field();
 		echo '<input type="hidden" name="key" value="'.$admin_hash.'" />';
 		echo '<input type="submit" value="Update site config files" />';
 		echo '</form>';
@@ -122,7 +143,13 @@ if (!isset($_REQUEST['key']) || trim($_REQUEST['key']) == '') {
 //////////////////////////////////
 // Check update key valid
 //////////////////////////////////
-if ($_REQUEST['key'] !== $admin_hash) {
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+	ftr_start_session($options);
+	ftr_require_csrf();
+}
+tpl_header('Update site patterns');
+if (!hash_equals($admin_hash, (string)$_REQUEST['key'])) {
+	http_response_code(403);
 	println("Sorry, invalid key supplied.");
 	exit;
 }

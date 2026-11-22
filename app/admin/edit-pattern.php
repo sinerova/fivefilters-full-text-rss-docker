@@ -27,8 +27,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Access this file in your browser and follow the instructions to update your site config files.
 
 error_reporting(E_ALL ^ E_NOTICE);
-ini_set("display_errors", 1);
-@set_time_limit(120);
+ini_set("display_errors", 0);
+ini_set("log_errors", 1);
 
 require_once '../libraries/content-extractor/SiteConfig.php';
 
@@ -48,26 +48,30 @@ function filter_only_text($filename) {
 	return (strtolower(substr($filename, -4)) == '.txt');
 }
 function is_valid_hostname($host) {
-	return preg_match('!^[a-z0-9_.-]+$!i', $host);
+	if (!is_string($host) || $host === '' || strpos($host, '..') !== false) {
+		return false;
+	}
+	return (bool)preg_match('!^\.?[a-z0-9][a-z0-9_.-]*$!i', $host);
 }
 
 /////////////////////////////////
 // Process changes
 /////////////////////////////////
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+	ftr_require_csrf();
 	// DELETE
 	if (@$_POST['delete'] != '' && @$_POST['delete_dir'] != '') {
 		if (is_valid_hostname($_POST['delete'])) {
-			$delete = $_POST['delete'];
+			$delete = basename($_POST['delete']);
 			if ($_POST['delete_dir'] == 'standard') {
 				$delete = '../site_config/standard/'.$delete;
 			} else {
 				$delete = '../site_config/custom/'.$delete;
 			}
 			if (@unlink($delete)) {
-				echo 'Deleted <strong>'.$delete.'</strong>';
+				echo 'Deleted <strong>'.htmlspecialchars($delete, ENT_QUOTES, 'UTF-8').'</strong>';
 			} else {
-				echo 'Failed to delete <strong>'.$delete.'</strong>';
+				echo 'Failed to delete <strong>'.htmlspecialchars($delete, ENT_QUOTES, 'UTF-8').'</strong>';
 			}
 		}
 		exit;
@@ -84,7 +88,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 			}
 			// TODO: check if file exists, if it does, prompt user whether to overwrite
 			if (file_put_contents($savepath, $_POST['contents']) !== false) {
-				echo '<p>Saved to <strong>'.$savepath.'</strong></p>';
+				echo '<p>Saved to <strong>'.htmlspecialchars($savepath, ENT_QUOTES, 'UTF-8').'</strong></p>';
 				// check caching
 				if ($options->caching) {
 					echo '<p>Note: caching is enabled &mdash; you may have to disable caching or delete cache files to see changes.<p>';
@@ -108,15 +112,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 						echo '<h4>Test URLs</h4>';
 						echo '<ul>';
 						foreach ($sconfig->test_url as $test_url) {
+							$test_url = trim((string)$test_url);
+							if (!preg_match('!^https?://.+!i', $test_url)) continue;
 							$ftr_test_url = $test_url;
 							if (strtolower(substr($ftr_test_url, 0, 7)) == 'http://') {
 								$ftr_test_url = substr($ftr_test_url, 7);
 							}
 							$ftr_test_url = '../makefulltextfeed.php?url='.urlencode($ftr_test_url);
 							echo '<li>';
-							echo '<a href="'.htmlspecialchars($test_url).'" target="_blank">'.htmlspecialchars($test_url).'</a>';
-							echo ' | <a href="'.$ftr_test_url.'" target="_blank">Full-Text RSS result</a>';
-							echo ' | <a href="'.$ftr_test_url.'&debug" target="_blank">Debug</a>';
+							echo '<a href="'.htmlspecialchars($test_url, ENT_QUOTES, 'UTF-8').'" target="_blank" rel="noopener noreferrer">'.htmlspecialchars($test_url, ENT_QUOTES, 'UTF-8').'</a>';
+							echo ' | <a href="'.$ftr_test_url.'" target="_blank" rel="noopener noreferrer">Full-Text RSS result</a>';
+							echo ' | <a href="'.$ftr_test_url.'&debug" target="_blank" rel="noopener noreferrer">Debug</a>';
 							echo '</li>';
 						}
 						echo '</ul>';
@@ -127,7 +133,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 					echo '<p>Could not load/parse config file</p>';
 				}
 			} else {
-				echo 'Failed to save <strong>'.$savepath.'</strong>. Make sure the directory is writable.';
+				echo 'Failed to save <strong>'.htmlspecialchars($savepath, ENT_QUOTES, 'UTF-8').'</strong>. Make sure the directory is writable.';
 			}
 		}
 		exit;
@@ -227,7 +233,9 @@ if (empty($matched)) {
 	echo '<p style="position: absolute;">Loaded <strong>'.htmlspecialchars($exact_match).'</strong></p>';
 } else {
 	$contents = end($matched);
-	$file_location = array_pop(array_keys($matched));
+	$_matched_keys = array_keys($matched);
+	$file_location = array_pop($_matched_keys);
+	unset($_matched_keys);
 	echo '<p style="position: absolute;">Loaded <strong>'.htmlspecialchars($file_location).'</strong></p>';
 }
 
@@ -238,6 +246,7 @@ $save_locations = array(
 	'standard' => 'standard'
 );
 echo '<form method="POST" action="edit-pattern.php">';
+echo ftr_csrf_field();
 echo '<div style="text-align: right; margin-top: 10px; margin-bottom: 5px;"><a href="http://help.fivefilters.org/customer/portal/articles/223153-site-patterns" target="_blank">Need help?</a></div>';
 echo '<textarea name="contents" class="span8" style="height: 400px;" id="config">'.htmlspecialchars($contents).'</textarea>';
 echo '<div style="margin-top: 8px; margin-bottom: 4px;">';
@@ -259,6 +268,7 @@ if (!empty($matched)) {
 	echo '<hr /><h3>Delete file?</h3>';
 	echo '<p>Delete <strong>'.htmlspecialchars($file_location).'</strong></p>';
 	echo '<form method="POST" action="edit-pattern.php" onsubmit="return confirm(\'Are you sure?\');">';
+	echo ftr_csrf_field();
 	echo '<input type="hidden" name="delete" value="'.htmlspecialchars(basename($file_location)).'" />';
 	echo '<input type="hidden" name="delete_dir" value="'.(strpos($file_location, '/standard/') ? 'standard' : 'custom').'" />';
 	echo '<input type="submit" value="Delete" class="btn btn-danger" />';
@@ -272,15 +282,17 @@ if (!empty($matched)) {
 			echo '<hr /><h3>Test URLs</h3>';
 			echo '<ul>';
 			foreach ($sconfig->test_url as $test_url) {
+				$test_url = trim((string)$test_url);
+				if (!preg_match('!^https?://.+!i', $test_url)) continue;
 				$ftr_test_url = $test_url;
 				if (strtolower(substr($ftr_test_url, 0, 7)) == 'http://') {
 					$ftr_test_url = substr($ftr_test_url, 7);
 				}
 				$ftr_test_url = '../makefulltextfeed.php?url='.urlencode($ftr_test_url);
 				echo '<li>';
-				echo '<a href="'.htmlspecialchars($test_url).'" target="_blank">'.htmlspecialchars($test_url).'</a>';
-				echo ' | <a href="'.$ftr_test_url.'" target="_blank">Full-Text RSS result</a>';
-				echo ' | <a href="'.$ftr_test_url.'&debug" target="_blank">Debug</a>';
+				echo '<a href="'.htmlspecialchars($test_url, ENT_QUOTES, 'UTF-8').'" target="_blank" rel="noopener noreferrer">'.htmlspecialchars($test_url, ENT_QUOTES, 'UTF-8').'</a>';
+				echo ' | <a href="'.$ftr_test_url.'" target="_blank" rel="noopener noreferrer">Full-Text RSS result</a>';
+				echo ' | <a href="'.$ftr_test_url.'&debug" target="_blank" rel="noopener noreferrer">Debug</a>';
 				echo '</li>';
 			}
 			echo '</ul>';

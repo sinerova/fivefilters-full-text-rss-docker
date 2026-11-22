@@ -230,4 +230,92 @@ final class FeedWriterTest extends TestCase
         $this->assertTrue($dom->loadXML($f->rssDocument()));
         $this->assertSame(0, $dom->getElementsByTagName('item')->length);
     }
+
+    public function testEmptyChannelTitleDescriptionAndLinkProduceValidRss(): void
+    {
+        $f = new FeedWriter(RSS2);
+        $f->setTitle('');
+        $f->setDescription('');
+        $f->setLink('');
+        $f->setAlternate('', '');
+        $item = $f->createNewItem();
+        $item->setTitle('');
+        $item->setDescription('');
+        $item->setLink('');
+        $f->addItem($item);
+
+        $xml = $f->rssDocument();
+        $dom = new DOMDocument();
+        $this->assertTrue($dom->loadXML($xml), 'empty channel/item fields must not crash or break XML');
+
+        require_once FTR_APP_DIR . '/libraries/simplepie/autoloader.php';
+        $sp = new SimplePie();
+        $sp->set_raw_data($xml);
+        $sp->enable_cache(false);
+        $this->assertTrue($sp->init(), (string)$sp->error());
+    }
+
+    public function testZeroStringChannelAndImageFieldsDoNotCrash(): void
+    {
+        $f = new FeedWriter(RSS2);
+        $f->setTitle('0');
+        $f->setDescription('0');
+        $f->setLink('0');
+        $f->setAlternate('https://example.com/feed.xml', '0');
+        $f->setImage('0', '0', 'https://example.com/logo.png');
+
+        $item = $f->createNewItem();
+        $item->setTitle('0');
+        $item->setDescription('0');
+        $item->setLink('0');
+        $f->addItem($item);
+
+        $xml = $f->rssDocument();
+        $dom = new DOMDocument();
+        $this->assertTrue($dom->loadXML($xml), '"0" fields must not trigger empty() exceptions');
+        $this->assertStringContainsString('<title>0</title>', $xml);
+        $this->assertStringContainsString('<description>0</description>', $xml);
+        $this->assertStringContainsString('<link>https://example.com/feed.xml</link>', $xml);
+
+        $json = $f->jsonDocument();
+        $this->assertSame('0', $json['rss']['channel']->title);
+        $this->assertSame('0', $json['rss']['channel']->description);
+        $this->assertSame('https://example.com/feed.xml', $json['rss']['channel']->link);
+    }
+
+    public function testUnsafeLinkSchemesAreRejectedInRssAndJson(): void
+    {
+        $f = new FeedWriter(RSS2);
+        $f->setTitle('Safe');
+        $f->setDescription('Safe desc');
+        $f->setLink('javascript:alert(1)');
+        $f->setAlternate('data:text/html,<script>alert(1)</script>', 'Source');
+        $f->setRelated('vbscript:msgbox(1)', 'Sub');
+
+        $item = $f->createNewItem();
+        $item->setTitle('Entry');
+        $item->setDescription('Body');
+        $item->setLink(" \tjavascript:alert(2)");
+        $f->addItem($item);
+
+        $xml = $f->rssDocument();
+        $this->assertStringNotContainsString('javascript:', strtolower($xml));
+        $this->assertStringNotContainsString('data:text/html', strtolower($xml));
+        $this->assertStringNotContainsString('vbscript:', strtolower($xml));
+
+        $json = json_encode($f->jsonDocument());
+        $this->assertStringNotContainsString('javascript:', strtolower((string)$json));
+    }
+
+    public function testFeedXslNeverDisablesOutputEscapingAndGuardsLinks(): void
+    {
+        $xslPath = FTR_APP_DIR . '/css/feed.xsl';
+        $xslDom = new DOMDocument();
+        $this->assertTrue($xslDom->load($xslPath), 'feed.xsl must be valid XML');
+        $xp = new DOMXPath($xslDom);
+        $unescaped = $xp->query('//*[@disable-output-escaping="yes"]');
+        $this->assertSame(0, $unescaped->length, 'feed.xsl must not use disable-output-escaping="yes"');
+        $xslRaw = (string)file_get_contents($xslPath);
+        $this->assertStringContainsString("starts-with(", $xslRaw, 'feed.xsl must guard href schemes');
+    }
 }

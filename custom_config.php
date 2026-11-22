@@ -35,7 +35,7 @@ $options->debug = 'admin';
 // ----------------------
 // The number of feed items to process when no API key is supplied
 // and no &max=x value is supplied in the querystring.
-$options->default_entries = 200;
+$options->default_entries = 10;
 
 // Max entries (without access key)
 // ----------------------
@@ -43,7 +43,7 @@ $options->default_entries = 200;
 // This limits the user-supplied &max=x value. For example, if the user
 // asks for 20 items to be processed (&max=20), if max_entries is set to 
 // 10, only 10 will be processed.
-$options->max_entries = 1000;
+$options->max_entries = 25;
 
 // Full content
 // ----------------------
@@ -272,12 +272,12 @@ $options->api_keys = array();
 // Default entries (with access key)
 // ----------------------
 // The number of feed items to process when a valid access key is supplied.
-$options->default_entries_with_key = 5;
+$options->default_entries_with_key = 10;
 
 // Max entries (with access key)
 // ----------------------
 // The maximum number of feed items to process when a valid access key is supplied.
-$options->max_entries_with_key = 10;
+$options->max_entries_with_key = 25;
 
 /////////////////////////////////////////////////
 /// ADVANCED OPTIONS ////////////////////////////
@@ -371,6 +371,11 @@ $options->cors = false;
 // Note: if you're listing proxies so Full-Text RSS randomly chooses one
 // for each request, you can also specify 'direct' as a value to make
 // sure direct requests are randomly made as well.
+// Security note: SafeHttpUrl still validates scheme, port, and local DNS answers
+// before sending any request through a proxy, so proxy settings do not bypass
+// SSRF checks. However, an HTTP proxy resolves target hostnames on its own side
+// (CURLOPT_RESOLVE only pins direct connections), so any configured outbound
+// proxy must enforce its own egress/DNS-rebinding restrictions to private space.
 $options->proxy_servers = array();
 // For example:
 //$options->proxy_servers = array('example1'=>array('host'=>'127.0.0.1:8888'), 'example2'=>array('host'=>'127.0.0.1:8888', 'auth'=>'user:pass'), 'direct'=>array());
@@ -483,11 +488,30 @@ $options->cache_directory_level = 0;
 // ...you get the idea :)
 $options->cache_cleanup = 100;
 
+// Hardening and resource limits (maintained fork; override via ftr_<name> env vars)
+// ----------------------
+// Disable JSONP callback wrapping by default (set true only if legacy cross-origin JS callers require it).
+$options->allow_jsonp = false;
+// Maximum additional pages fetched per multipage article (0 disables multipage traversal).
+$options->max_multipage = 10;
+// Maximum compressed and decompressed HTTP response body size in bytes (default 10 MiB).
+$options->max_response_bytes = 10485760;
+// Per-request HTTP timeout in seconds.
+$options->http_timeout = 15;
+// Maximum HTTP or HTML meta-refresh redirect hops per URL.
+$options->max_redirects = 5;
+// Maximum concurrent outbound cURL transfers.
+$options->max_parallel_requests = 5;
+// Trust X-Forwarded-Proto, X-Forwarded-Host, and client Host headers only when behind a trusted reverse proxy.
+$options->trust_forwarded_headers = false;
+// Optional canonical public base URL (e.g. 'https://rss.example.com') used when building self links.
+$options->public_url = '';
+
 /////////////////////////////////////////////////
 /// DO NOT CHANGE ANYTHING BELOW THIS ///////////
 /////////////////////////////////////////////////
 
-if (!defined('_FF_FTR_VERSION')) define('_FF_FTR_VERSION', '3.5');
+if (!defined('_FF_FTR_VERSION')) define('_FF_FTR_VERSION', '3.8');
 
 if (basename(__FILE__) == 'config.php') {
 	if (file_exists(dirname(__FILE__).'/custom_config.php')) {

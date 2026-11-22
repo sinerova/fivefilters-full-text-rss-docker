@@ -519,6 +519,16 @@ $options->cache_directory_level = 0;
 // ...you get the idea :)
 $options->cache_cleanup = 100;
 
+// Hardening and resource limits (maintained fork)
+$options->allow_jsonp = false;
+$options->max_multipage = 10;
+$options->max_response_bytes = 10485760;
+$options->http_timeout = 15;
+$options->max_redirects = 5;
+$options->max_parallel_requests = 5;
+$options->trust_forwarded_headers = false;
+$options->public_url = '';
+
 /////////////////////////////////////////////////
 /// DO NOT CHANGE ANYTHING BELOW THIS ///////////
 /////////////////////////////////////////////////

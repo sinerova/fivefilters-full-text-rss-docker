@@ -37,7 +37,12 @@ class FeedItem
 
     public function setLink($link)
     {
-        $this->setElement('link', $link);
+        $safe = FeedWriter::sanitizeHttpUrl($link);
+        if ($safe !== '') {
+            $this->setElement('link', $safe);
+        } else {
+            unset($this->elements['link']);
+        }
     }
 
     /**
@@ -61,6 +66,9 @@ class FeedItem
     public function buildRss($feed)
     {
         $item = $feed->createNewItem();
+        if (!isset($this->elements['title']) && !isset($this->elements['description'])) {
+            $item->addElement('description', '', null, false, true);
+        }
         foreach ($this->elements as $name => $values) {
             if (preg_match('/^(twitter|og):/i', $name)) {
                 continue;

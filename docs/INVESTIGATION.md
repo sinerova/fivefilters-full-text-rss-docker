@@ -1,6 +1,6 @@
 # Investigation findings (pre-change)
 
-Status: findings and proposal only. No application or Docker changes have been made yet.
+Status: this was the pre-change investigation. Its findings were the basis for the hardening work on branch `harden/audit-fixes`. Sections 1, 5 and 6 describe the state before that work. See `Readme.md` for the current state.
 
 ## 1. What this repository actually contains
 

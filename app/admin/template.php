@@ -1,12 +1,14 @@
 <?php
+require_once(dirname(__FILE__).'/session_csrf.php');
 ob_start();
 function tpl_header($title='Full-Text RSS Admin Area') {
 global $admin_page;
+$safe_title = htmlspecialchars((string)$title, ENT_QUOTES, 'UTF-8');
 ?>
 <!DOCTYPE html>
 <html>
   <head>
-    <title><?php echo $title; ?></title>
+    <title><?php echo $safe_title; ?></title>
 	<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />	
 	<meta name="robots" content="noindex, nofollow" />
 	<link rel="stylesheet" href="../css/bootstrap.min.css" type="text/css" media="screen" />
@@ -40,12 +42,18 @@ global $admin_page;
 		<ul class="nav">
 		  <li <?php if (@$admin_page == 'update') echo 'class="active"'; ?>><a href="update.php">Update patterns</a></li>
 		  <li <?php if (@$admin_page == 'edit-pattern') echo 'class="active"'; ?>><a href="edit-pattern.php">Edit patterns</a></li>
-		  <li><a href="index.php?logout">Logout</a></li>
+		  <li>
+			<form method="post" action="index.php" style="margin: 0; display: inline;">
+			  <?php if (session_status() === PHP_SESSION_ACTIVE) echo ftr_csrf_field(); ?>
+			  <input type="hidden" name="logout" value="1" />
+			  <button type="submit" class="btn btn-link" style="padding: 10px 15px; border: 0; background: transparent; color: #999; text-shadow: 0 -1px 0 rgba(0,0,0,0.25); cursor: pointer;">Logout</button>
+			</form>
+		  </li>
 		</ul>
       </div>
     </div>
    </div>  
-  <div class="page-header"><h1><?php echo $title; ?></h1></div>
+  <div class="page-header"><h1><?php echo $safe_title; ?></h1></div>
 <?php
 }
 

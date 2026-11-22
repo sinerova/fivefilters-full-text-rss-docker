@@ -15,28 +15,36 @@ class SafeHttpUrl
 	const DEFAULT_PORTS = array('http' => 80, 'https' => 443);
 	const ALLOWED_PORTS = array(80, 443, 8080, 8443);
 
-	// Test-only seam: when set, only these hosts (with explicit port) are allowed to resolve to loopback.
-	// Never set in production; see tests/bootstrap.php.
+	// Test-only seams: never set in production; see tests/bootstrap.php.
 	public static $testAllowedHosts = null;
+	public static $testHostIpMap = null;
+	public static $dnsResolver = null;
 
 	private static function resolveForTest($url)
 	{
 		$parts = parse_url($url);
 		if ($parts === false || !isset($parts['host'], $parts['port'])) return false;
-		$key = strtolower($parts['host']).':'.(int)$parts['port'];
-		if (!in_array($key, self::$testAllowedHosts, true)) return false;
-		return array('url' => $url, 'host' => strtolower($parts['host']), 'port' => (int)$parts['port'], 'ip' => '127.0.0.1');
+		$host = strtolower($parts['host']);
+		$port = (int)$parts['port'];
+		$key = $host.':'.$port;
+		if (is_array(self::$testHostIpMap) && isset(self::$testHostIpMap[$key])) {
+			$ips = array_values(self::$testHostIpMap[$key]);
+			if (!$ips) return false;
+			return array('url' => $url, 'host' => $host, 'port' => $port, 'ip' => $ips[0], 'ips' => $ips);
+		}
+		if (!is_array(self::$testAllowedHosts) || !in_array($key, self::$testAllowedHosts, true)) return false;
+		return array('url' => $url, 'host' => $host, 'port' => $port, 'ip' => '127.0.0.1', 'ips' => array('127.0.0.1'));
 	}
 
 	/**
 	 * Parse and validate a URL, resolve its host, and return the vetted target.
 	 *
-	 * @return array|false array('url' => string, 'host' => string, 'port' => int, 'ip' => string) or false
+	 * @return array|false array('url' => string, 'host' => string, 'port' => int, 'ip' => string, 'ips' => string[]) or false
 	 */
 	public static function resolve($url)
 	{
 		if (!is_string($url) || $url === '' || strlen($url) > 2048) return false;
-		if (self::$testAllowedHosts !== null) {
+		if (self::$testAllowedHosts !== null || self::$testHostIpMap !== null) {
 			return self::resolveForTest($url);
 		}
 		if (preg_match('/[\x00-\x20\x7f]/', $url)) return false;
@@ -62,10 +70,30 @@ class SafeHttpUrl
 		$port = isset($parts['port']) ? (int)$parts['port'] : self::DEFAULT_PORTS[$scheme];
 		if (!in_array($port, self::ALLOWED_PORTS, true)) return false;
 
-		$ip = self::resolvePublicIp($host);
-		if ($ip === false) return false;
+		$ips = self::resolvePublicIps($host);
+		if ($ips === false) return false;
 
-		return array('url' => $url, 'host' => $host, 'port' => $port, 'ip' => $ip);
+		return array('url' => $url, 'host' => $host, 'port' => $port, 'ip' => $ips[0], 'ips' => $ips);
+	}
+
+	/**
+	 * Build a CURLOPT_RESOLVE entry pinning all validated addresses for dual-stack fallback.
+	 */
+	public static function formatResolveEntry(array $target)
+	{
+		$host = (string)$target['host'];
+		if (strpos($host, ':') !== false && $host[0] !== '[') {
+			$host = '[' . $host . ']';
+		}
+		$ips = isset($target['ips']) && is_array($target['ips']) && $target['ips']
+			? $target['ips']
+			: array((string)$target['ip']);
+		$formatted = array();
+		foreach ($ips as $ip) {
+			$ip = (string)$ip;
+			$formatted[] = (strpos($ip, ':') !== false && $ip[0] !== '[') ? ('[' . $ip . ']') : $ip;
+		}
+		return $host . ':' . (int)$target['port'] . ':' . implode(',', $formatted);
 	}
 
 	public static function isValid($url)
@@ -88,36 +116,57 @@ class SafeHttpUrl
 	}
 
 	/**
-	 * Resolve host to exactly one public IP. Returns false if any address is non-public.
+	 * Resolve host to all public IPs (preserving DNS order, deduplicated).
+	 * Returns false if resolution fails or ANY resolved address is non-public.
+	 */
+	public static function resolvePublicIps($host)
+	{
+		if (filter_var($host, FILTER_VALIDATE_IP)) {
+			return self::isPublicIp($host) ? array($host) : false;
+		}
+		$ips = array();
+		if (is_callable(self::$dnsResolver)) {
+			$resolved = call_user_func(self::$dnsResolver, $host);
+			if (is_array($resolved)) {
+				$ips = $resolved;
+			}
+		} else {
+			$records = @dns_get_record($host, DNS_A | DNS_AAAA);
+			if (is_array($records)) {
+				foreach ($records as $rec) {
+					if (isset($rec['ip'])) $ips[] = $rec['ip'];
+					if (isset($rec['ipv6'])) $ips[] = $rec['ipv6'];
+				}
+			}
+			if (!$ips) {
+				$v4 = @gethostbynamel($host);
+				if (is_array($v4)) $ips = $v4;
+			}
+		}
+		if (!$ips) return false;
+		$unique = array();
+		foreach ($ips as $ip) {
+			if (!is_string($ip) || !self::isPublicIp($ip)) return false;
+			if (!in_array($ip, $unique, true)) {
+				$unique[] = $ip;
+			}
+		}
+		return $unique;
+	}
+
+	/**
+	 * Resolve host to its first public IP (backward-compatible helper).
 	 */
 	public static function resolvePublicIp($host)
 	{
-		if (filter_var($host, FILTER_VALIDATE_IP)) {
-			return self::isPublicIp($host) ? $host : false;
-		}
-		$ips = array();
-		$records = @dns_get_record($host, DNS_A | DNS_AAAA);
-		if (is_array($records)) {
-			foreach ($records as $rec) {
-				if (isset($rec['ip'])) $ips[] = $rec['ip'];
-				if (isset($rec['ipv6'])) $ips[] = $rec['ipv6'];
-			}
-		}
-		if (!$ips) {
-			$v4 = @gethostbynamel($host);
-			if (is_array($v4)) $ips = $v4;
-		}
-		if (!$ips) return false;
-		foreach ($ips as $ip) {
-			if (!self::isPublicIp($ip)) return false;
-		}
-		return $ips[0];
+		$ips = self::resolvePublicIps($host);
+		return ($ips === false) ? false : $ips[0];
 	}
 
 	/**
 	 * True only for globally routable unicast addresses.
 	 * Blocks loopback, private, link-local, CGNAT, multicast, reserved, and
-	 * IPv4-mapped/compatible IPv6 forms of those, plus cloud metadata ranges.
+	 * IPv4-mapped/compatible IPv6 forms of those, plus special-use IPv6 ranges.
 	 */
 	public static function isPublicIp($ip)
 	{
@@ -132,16 +181,27 @@ class SafeHttpUrl
 			if ($prefix === str_repeat("\x00", 10) . "\xff\xff" || $prefix === str_repeat("\x00", 12)) {
 				return self::isPublicIp(inet_ntop(substr($bin, 12)));
 			}
-			// Reject 64:ff9b::/96 (NAT64) to internal space, fc00::/7 (ULA), fe80::/10 (link-local),
-			// and 2002::/16 (6to4, can embed private IPv4).
+			// Reject fc00::/7 (ULA), fe80::/10 (link-local), 2002::/16 (6to4),
+			// and special-use ranges inside 2000::/3 (IANA RFC 6890):
+			// - 2001::/23 (IETF protocol assignments, incl. Teredo 2001::/32,
+			//   Benchmarking 2001:2::/48, ORCHID 2001:10::/28, ORCHIDv2 2001:20::/28)
+			// - 2001:db8::/32 (Documentation, RFC 3849)
 			$first = ord($bin[0]);
 			if (($first & 0xfe) === 0xfc) return false;
 			if ($first === 0xfe && (ord($bin[1]) & 0xc0) === 0x80) return false;
 			if ($first === 0x20 && ord($bin[1]) === 0x02) return false;
+			if ($first === 0x20 && ord($bin[1]) === 0x01) {
+				// 2001:0000::/23 covers 2001:0000:: through 2001:01ff::
+				if ((ord($bin[2]) & 0xfe) === 0x00) return false;
+				// 2001:0db8::/32 documentation prefix
+				if ($bin[2] === "\x0d" && $bin[3] === "\xb8") return false;
+			}
+			// 64:ff9b::/96 well-known NAT64 (only allow if embedded IPv4 is public;
+			// note 64:ff9b:1::/48 local-use NAT64 is rejected below by 2000::/3 check).
 			if (substr($bin, 0, 12) === "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00") {
 				return self::isPublicIp(inet_ntop(substr($bin, 12)));
 			}
-			// Only global unicast 2000::/3 is allowed.
+			// Only global unicast 2000::/3 is allowed (blocks 100::/64 discard, 64:ff9b:1::/48, etc.).
 			return ($first & 0xe0) === 0x20;
 		}
 
