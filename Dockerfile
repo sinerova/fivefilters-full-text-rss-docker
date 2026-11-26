@@ -3,7 +3,7 @@
 # Site rules: fivefilters/ftr-site-config (CC0), pinned to the commit below.
 # Update process: see Readme.md, section "Updating".
 
-ARG PHP_IMAGE=php:8.4-apache@sha256:20da4cbf0dbb1b1951a3f88b2fb16a8272dd42c8a02901e7454bfa6151734402
+ARG PHP_IMAGE=php:8.4-apache@sha256:95c1a1dfaaffef4bcfee563838c50620457a3c00196c4bf5ddb66934d707fea2
 ARG ALPINE_IMAGE=alpine:3.21@sha256:bc21487101ae47172509130ee1092cc273a831968d64b617776d1f69c81e42ab
 ARG SITE_CONFIG_REPO=https://github.com/fivefilters/ftr-site-config.git
 ARG SITE_CONFIG_COMMIT=7356cc5e57a3bcb4ed4b8a59833bc9abb22a91cb
@@ -43,6 +43,9 @@ COPY --from=tidy-build /out/ /tmp/tidy/
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends "$(cat /tmp/tidy/runtime-pkg)"; \
+    # Pick up Debian security fixes that the pinned base image does not have yet. Only packages that are already\
+    # installed are upgraded. Remove a package from this list once the base image carries the fix.\
+    apt-get install -y --no-install-recommends --only-upgrade libzstd1; \
     cp /tmp/tidy/tidy.so "$(php -r 'echo ini_get("extension_dir");')/tidy.so"; \
     echo "extension=tidy" > /usr/local/etc/php/conf.d/docker-php-ext-tidy.ini; \
     a2dismod -f autoindex status || true; \

@@ -17,6 +17,19 @@ automated dependency scanner covers these (they are vendored, not installed by C
 | Bootstrap (`app/css/bootstrap.min.css`, `app/js/bootstrap-*.js`) | 2.0.3 | twitter.github.com/bootstrap (bundled upstream) | Apache-2.0 (in file headers; standalone `LICENSE` text not bundled) | Legacy 2.0.x tooltip/popover XSS advisories (e.g. CVE-2018-14040, CVE-2019-8331) when untrusted HTML is passed to `title`/`data-content` | Residual risk in web UI (`index.php` and `/admin/`); static attributes used in shipped templates. |
 | CodeMirror (`app/admin/codemirror/*`) | 2.x (minified, unversioned header) | codemirror.net (bundled upstream) | MIT-style upstream (standalone licence header/file not bundled in `app/admin/codemirror/`) | Unverified (minified legacy 2.x bundle) | Used only on authenticated `/admin/edit-pattern.php`. |
 
+## Code written for this fork (not vendored)
+
+These files in `app/libraries/` are original code (AGPL-3.0, like the rest of the application). They have no third-party dependencies beyond the libraries above. All are covered by unit tests in `tests/unit/`.
+
+| File | Purpose | Notes |
+|---|---|---|
+| `SafeHttpUrl.php` | SSRF guard and address pinning | See `docs/INVESTIGATION.md` and the Readme. |
+| `DisableSimplePieSanitize.php` | Keeps SimplePie from sanitising feed text | |
+| `HostList.php` | `allowed_hosts` matching | Exact host or subdomain, never a substring. |
+| `Srcset.php` | Rewrites relative `srcset` URLs to absolute | Keeps only http(s) URLs and valid descriptors. Length and count capped. |
+| `JsonLd.php` | Title, author and date from JSON-LD | Pure function with no state. Script count, bytes, depth and entity count capped. Values reduced to plain text. |
+| `HtmlToText.php` | `&content=text` | Emits only text nodes, alt text and absolute link targets. Depth capped. Uses the bundled HTML5-PHP parser. |
+
 ## Change made during this review
 
 `HumbleHttpAgent` previously included legacy `pecl_http` (`METHOD_REQUEST_POOL`) and

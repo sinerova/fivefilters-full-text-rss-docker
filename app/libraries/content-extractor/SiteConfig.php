@@ -90,13 +90,20 @@ class SiteConfig
 	// Which parser to use for turning raw HTML into a DOMDocument (either 'libxml' or 'html5lib')
 	// string or null if undeclared
 	public $parser = null;
-	protected $default_parser = 'libxml'; // used if undeclared
+	protected $default_parser = 'libxml'; // used if undeclared and self::$global_default_parser is not set
+	// Parser used when neither the site config nor the request names one. Set from $options->default_parser.
+	public static $global_default_parser = null;
 	
 	// Insert detected image (currently only og:image) into beginning of extracted article
 	// Only does this if extracted article contains no images
 	// bool or null if undeclared
 	public $insert_detected_image = null;
 	protected $default_insert_detected_image = true; // used if undeclared
+
+	// Do not look inside JSON-LD elements for title, author and date (3.9.7: skip_json_ld: yes)
+	// bool or null if undeclared
+	public $skip_json_ld = null;
+	protected $default_skip_json_ld = false; // used if undeclared
 
 	// Strings to search for in HTML before processing begins (used with $replace_string)
 	public $find_string = array();
@@ -148,6 +155,12 @@ class SiteConfig
 	}
 
 	// return bool or null
+	public function skip_json_ld($use_default=true) {
+		if ($use_default) return (isset($this->skip_json_ld)) ? $this->skip_json_ld : $this->default_skip_json_ld;
+		return $this->skip_json_ld;
+	}
+
+	// return bool or null
 	public function tidy($use_default=true) {
 		if ($use_default) return (isset($this->tidy)) ? $this->tidy : $this->default_tidy;
 		return $this->tidy;
@@ -161,7 +174,7 @@ class SiteConfig
 	
 	// return string or null
 	public function parser($use_default=true) {
-		if ($use_default) return (isset($this->parser)) ? $this->parser : $this->default_parser;
+		if ($use_default) return (isset($this->parser)) ? $this->parser : (self::$global_default_parser !== null ? self::$global_default_parser : $this->default_parser);
 		return $this->parser;
 	}
 
@@ -252,7 +265,7 @@ class SiteConfig
 		}
 		// check for single statement commands
 		// we do not overwrite existing non null values
-		foreach (array('tidy', 'prune', 'parser', 'autodetect_on_failure', 'insert_detected_image') as $var) {
+		foreach (array('tidy', 'prune', 'parser', 'autodetect_on_failure', 'insert_detected_image', 'skip_json_ld') as $var) {
 			if ($this->$var === null) $this->$var = $newconfig->$var;
 		}
 		// treat find_string and replace_string separately (don't apply array_unique) (thanks fabrizio!)
@@ -436,7 +449,7 @@ class SiteConfig
 			if (in_array($command, array('title', 'body', 'author', 'date', 'strip', 'strip_id_or_class', 'strip_image_src', 'single_page_link', 'single_page_link_in_feed', 'next_page_link', 'native_ad_clue', 'http_header', 'test_url', 'find_string', 'replace_string'))) {
 				array_push($config->$command, $val);
 			// check for single statement commands that evaluate to true or false
-			} elseif (in_array($command, array('tidy', 'prune', 'autodetect_on_failure', 'insert_detected_image'))) {
+			} elseif (in_array($command, array('tidy', 'prune', 'autodetect_on_failure', 'insert_detected_image', 'skip_json_ld'))) {
 				$config->$command = ($val == 'yes');
 			// check for single statement commands stored as strings
 			} elseif (in_array($command, array('parser'))) {

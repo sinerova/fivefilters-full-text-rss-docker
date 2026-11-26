@@ -7,12 +7,12 @@ Hardened Docker image of FiveFilters Full-Text RSS 3.8, running on PHP 8.4. User
 | Path | What it is | Copied into image? |
 | --- | --- | --- |
 | `app/` | The PHP application (an AGPL fork of upstream), served from `/var/www/html` | yes |
-| `app/libraries/` | Vendored third-party code. Versions and sources are in `docs/LIBRARIES.md`. `SafeHttpUrl.php` and `DisableSimplePieSanitize.php` are our own code | yes |
+| `app/libraries/` | Vendored third-party code. Versions and sources are in `docs/LIBRARIES.md`. Our own code, listed there too: `SafeHttpUrl.php`, `DisableSimplePieSanitize.php`, `HostList.php`, `Srcset.php`, `JsonLd.php`, `HtmlToText.php` | yes |
 | `app/site_config/standard/` | Placeholder only. The Dockerfile replaces it with `fivefilters/ftr-site-config` at `SITE_CONFIG_COMMIT` | replaced |
 | `docker/` | Everything else the image needs: `custom_config.php` (shipped settings), Apache vhost and ports, MPM settings, `php.ini` | yes |
 | `custom/` | Bind-mount target for user site rules (`site_config/custom`). Empty in git | no |
 | `tests/` | PHPUnit (`unit/`, `integration/`), fixtures, and `container/smoke.sh` for a built image. See `tests/README.md` | no |
-| `docs/` | `INVESTIGATION.md` (threat model before hardening), `LIBRARIES.md` (vendored library audit), `calls.http` (example requests), `webui.png` | no |
+| `docs/` | `INVESTIGATION.md` (threat model before hardening), `LIBRARIES.md` (vendored library audit), `PARITY.md` (upstream 3.9 to 3.9.13 changelog, line by line), `calls.http` (example requests), `webui.png` | no |
 | `Dockerfile`, `docker-bake.hcl`, `compose.yml` | Build, multi-arch release (amd64 and arm64), runtime defaults | no |
 
 ## Commands
@@ -31,6 +31,8 @@ docker buildx bake          # release: both platforms
 ## Conventions
 
 - Settings: change `docker/custom_config.php`, not `app/config.php`. The image copies it to `/var/www/html/custom_config.php`, which overrides `config.php`. The integration tests copy it the same way.
+- A new option needs its default in `app/config.php` as well as the shipped value in `docker/custom_config.php` (an older `custom_config.php` must keep working). Anything that changes the output must go into the cache key in `makefulltextfeed.php`, or users get stale or wrong cached responses.
+- Tests fail on any PHP warning, notice or deprecation from the endpoint (the shipped `php.ini` hides deprecations, the tests do not). Add a test with each behaviour change. If you port something from upstream, add its line to `docs/PARITY.md`. No official open release of upstream 3.9.x was found, so work from the changelog, not from third-party copies of unclear provenance.
 - All outbound HTTP must go through `app/libraries/SafeHttpUrl.php` (SSRF guard and address pinning). Do not add other transports.
 - When you add a file to `app/` that must not be served, also add it to the `LocationMatch` deny rule in `docker/ftr-site.conf` and add a check to `tests/container/smoke.sh`.
 - When you change a vendored library, update `docs/LIBRARIES.md`.

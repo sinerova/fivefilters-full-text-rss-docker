@@ -59,18 +59,13 @@ $options->max_entries = 10;
 // from the output.
 $options->content = 'user';
 
-// HTML5 output
+// Plain text and HTML5 output
 // ----------------------
-// Full-Text RSS used to rely on libxml to output HTML extracted from
-// a web page. Since version 3.8 we use HTML5-PHP by default.
-// If you prefer the old output, either set this to false or pass &content=1 
-// in the querystring.
-// 
-// Possible values...
-// HTML5 (slower): true
-// libxml (faster): false
-// HTML5 unless user overrides (&content=1): 'user' (default)
-$options->html5_output = 'user';
+// Pass &content=text in the querystring to get the extracted content as plain text
+// instead of HTML (lines wrapped at 70 characters). &content=text80 wraps at 80;
+// any width from 20 to 500 can be given the same way (&content=text100).
+// HTML output is always serialised with HTML5-PHP. The old html5_output option was
+// removed in 3.9; &content=html5 and &content=1 are still accepted and change nothing.
 
 // Excerpts
 // ----------------------
@@ -238,20 +233,31 @@ $options->remove_native_ads = false;
 // Example: $options->admin_credentials = array('username'=>'admin', 'password'=>'my-secret-password');
 $options->admin_credentials = array('username'=>'admin', 'password'=>'');
 
-// URLs to allow
+// Hosts to allow
 // ----------------------
-// List of URLs (or parts of a URL) which the service will accept.
-// If the list is empty, all URLs (except those specified in the blocked list below)
+// List of host names which the service will accept. A URL matches if its host is
+// exactly one of the entries or a subdomain of one (example.com allows www.example.com
+// but not notexample.com, and not evil.net/?example.com). Case is ignored.
+// If the list is empty, all hosts (except those matching the blocked list below)
 // will be permitted.
 // Note: for feeds, this option applies to both feed URLs and item URLs within those feeds.
 // Empty: array();
 // Non-empty example: array('example.com', 'anothersite.org');
+// Environment variable: ftr_allowed_hosts: example.com,anothersite.org
+$options->allowed_hosts = array();
+
+// URLs to allow (deprecated: use allowed_hosts)
+// ----------------------
+// List of URLs (or parts of a URL) which the service will accept. This is a plain
+// substring match anywhere in the URL, so it is easy to bypass (a URL such as
+// http://evil.net/?example.com contains example.com). It is only used when
+// allowed_hosts is empty.
 $options->allowed_urls = array();
 
 // URLs to block
 // ----------------------
 // List of URLs (or parts of a URL) which the service will not accept.
-// Note: this list is ignored if allowed_urls is not empty.
+// Note: this list is ignored if allowed_hosts or allowed_urls is not empty.
 // Note: for feeds, this option applies to both feed URLs and item URLs within those feeds.
 $options->blocked_urls = array();
 
@@ -381,6 +387,15 @@ $options->favour_feed_titles = 'user';
 $options->allowed_parsers = array('libxml', 'html5php');
 //$options->allowed_parsers = array('libxml'); //disable html5php - forcing libxml in all cases
 
+// Default HTML parser
+// ----------------------
+// The parser used when a site config file does not name one (parser: libxml) and the
+// request does not override it (&parser=libxml). Since 3.9.5 this is html5php, which
+// fixes character-encoding problems seen with libxml. Set to 'libxml' for the 3.8 behaviour
+// (faster, but weaker on malformed HTML). It must be one of the allowed parsers above.
+// Environment variable: ftr_default_parser: libxml
+$options->default_parser = 'html5php';
+
 // Parser override in querystring
 // ---------------------
 // If enabled, user can pass &parser=html5php to override default parser.
@@ -466,7 +481,10 @@ $options->fingerprints = array(
 	// WordPress (hosted)
 	// '<meta name="generator" content="WordPress.com"' => array('hostname'=>'fingerprint.wordpress.com', 'head'=>true),
 	// WordPress (self-hosted and hosted)
-	'<meta name="generator" content="WordPress' => array('hostname'=>'fingerprint.wordpress.com', 'head'=>true)
+	'<meta name="generator" content="WordPress' => array('hostname'=>'fingerprint.wordpress.com', 'head'=>true),
+	// Substack, including publications on custom domains (3.9.12). Every Substack page preconnects to
+	// substackcdn.com near the top of the head. The host resolves to the .substack.com.txt site config.
+	'<link rel="preconnect" href="https://substackcdn.com"' => array('hostname'=>'fingerprint.substack.com', 'head'=>true)
 );
 
 // URL Rewriting
@@ -551,6 +569,9 @@ if (basename(__FILE__) == 'config.php') {
 				if ($_key === 'ftr_admin_credentials') {
 					$_val = array_combine(array('username', 'password'), array_map('trim', explode(':', $_env, 2)));
 					if ($_val === false) $_val = array('username'=>'admin', 'password'=>'');
+				} elseif (in_array($_key, array('ftr_allowed_hosts', 'ftr_allowed_urls', 'ftr_blocked_urls'), true)) {
+					// comma-separated list, e.g. ftr_allowed_hosts: example.com,example.org
+					$_val = array_values(array_filter(array_map('trim', explode(',', $_env)), 'strlen'));
 				}
 			} elseif ($_env === 'true' || $_env === 'false') {
 				$_val = ($_env === 'true');
