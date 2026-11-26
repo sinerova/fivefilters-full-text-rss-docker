@@ -48,13 +48,55 @@ docker compose up -d --build
 
 The service definition is in [compose.yml](compose.yml).
 
-Then open <http://localhost> for the web UI.
+### Default compose config
+
+This is the default `compose.yml` shipped in this repository. To pull the published image instead of building it, delete the `build: .` line and keep `image:`.
+
+```yaml
+services:
+  fullfeedrss:
+    build: .
+    # Override IMAGE to publish under a different registry path.
+    image: "${IMAGE:-ghcr.io/sinerova/fivefilters-full-text-rss}:latest"
+    cpus: 1.0
+    mem_limit: 1G
+    pids_limit: 128
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+      - /run/apache2:size=16m,mode=1777,noexec,nosuid,nodev
+      - /var/lock/apache2:size=16m,mode=1777,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      # Leave empty to disable the admin section (default).
+      # Set to a long random value to enable it.
+      - FTR_ADMIN_PASSWORD=${FTR_ADMIN_PASSWORD:-}
+    volumes:
+      - "rss-cache:/var/www/html/cache"
+      - "./custom:/var/www/html/site_config/custom"
+    # Bound to loopback by default; place behind an authenticating/rate-limiting reverse proxy for network exposure.
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - ftr
+volumes:
+  rss-cache:
+networks:
+  ftr:
+    name: ftrnet
+```
+
+The web UI is then at <http://localhost:8080>.
 
 Example calls:
 
 ```text
-http://localhost/extract.php?url=https://example.org/article.html
-http://localhost/makefulltextfeed.php?url=https://example.org/feed.xml&max=10
+http://localhost:8080/extract.php?url=https://example.org/article.html
+http://localhost:8080/makefulltextfeed.php?url=https://example.org/feed.xml&max=10
 ```
 
 See [calls.http](calls.http) for more examples.
