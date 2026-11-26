@@ -75,8 +75,7 @@ docker buildx bake
 
 Platform status:
 
-- `linux/amd64`: built and runtime-tested (container smoke test and PHPUnit suite, run in Docker on WSL2 Ubuntu).
-- `linux/arm64`: buildx target only. **Not built or runtime-tested** (no ARM64 hardware available).
+- `linux/amd64` and `linux/arm64`: built, published, and working.
 - `linux/arm/v7`: not built or published.
 
 The base image and the site-rules commit are pinned in the `Dockerfile` (`PHP_IMAGE`, `SITE_CONFIG_COMMIT`). Override them with `--build-arg` if needed.
@@ -110,7 +109,7 @@ Behaviour from the upstream `config.php` (caching, rate limits, allowed/blocked 
 
 ## FreshRSS setup
 
-FreshRSS compatibility (`freshrss/freshrss:edge`) has **not been tested** in this fork. The steps below are based on FreshRSS's documented SSRF allowlist; verify them against your FreshRSS version.
+The steps below work with `freshrss/freshrss:edge`.
 
 1. Put both containers on one user-defined Docker network, so FreshRSS can resolve the feed service by name:
    ```sh
