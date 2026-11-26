@@ -77,7 +77,15 @@ function autoload($class_name) {
 		// htmLawed - used if XSS filter is enabled (xss_filter)
 		'htmLawed' => 'htmLawed/htmLawed.php',
 		// Disable SimplePie sanitization
-		'DisableSimplePieSanitize' => 'DisableSimplePieSanitize.php'
+		'DisableSimplePieSanitize' => 'DisableSimplePieSanitize.php',
+		// Host matching for the allowed_hosts option
+		'HostList' => 'HostList.php',
+		// srcset parsing and URL rewriting
+		'Srcset' => 'Srcset.php',
+		// Title, author and date from JSON-LD Article data
+		'JsonLd' => 'JsonLd.php',
+		// Plain text output (&content=text)
+		'HtmlToText' => 'HtmlToText.php'
 	);
 	if (isset($mapping[$class_name])) {
 		debug("** Loading class $class_name ({$mapping[$class_name]})");
@@ -348,14 +356,13 @@ if ($options->content === 'user') {
 }
 
 ///////////////////////////////////////////////
-// HTML5 output?
+// Plain text output? &content=text (wrap at 70 characters) or &content=text80 (wrap at 80)
+// HTML5 serialisation is always used since 3.9 (the html5_output option is gone), so
+// &content=html5 and &content=1 are accepted and change nothing.
 ///////////////////////////////////////////////
-if ($options->html5_output === 'user') {
-	if (isset($_REQUEST['content']) && $_REQUEST['content'] === '1') {
-		$options->html5_output = false;
-	} else {
-		$options->html5_output = true;
-	}
+$content_text_width = null;
+if (isset($_REQUEST['content'])) {
+	$content_text_width = HtmlToText::widthFromParameter($_REQUEST['content']);
 }
 
 ///////////////////////////////////////////////
@@ -510,7 +517,7 @@ if (isset($_REQUEST['inputhtml']) && _FF_FTR_MODE == 'simple') {
 if ($options->caching) {
 	debug('Caching is enabled...');
 	$cache_id = hash('sha256', json_encode(array(
-		'v' => 2,
+		'v' => 3, // bumped for 3.9 parity changes (default parser, srcset, images=0, text output)
 		'max' => (int)$max,
 		'url' => (string)$url,
 		'valid_key' => (bool)$valid_key,
@@ -519,7 +526,7 @@ if ($options->caching) {
 		'images' => (bool)$images,
 		'favour_feed_titles' => (bool)$favour_feed_titles,
 		'content' => (bool)$options->content,
-		'html5_output' => (bool)$options->html5_output,
+		'text_width' => $content_text_width,
 		'summary' => (bool)$options->summary,
 		'xss_filter' => (bool)$xss_filter,
 		'favour_effective_url' => (bool)$favour_effective_url,
@@ -527,6 +534,7 @@ if ($options->caching) {
 		'format' => (string)$format,
 		'detect_language' => (string)$detect_language,
 		'parser' => (string)$parser,
+		'default_parser' => (string)$options->default_parser,
 		'user_submitted_config' => (string)$user_submitted_config,
 		'mode' => (string)_FF_FTR_MODE,
 		'multipage' => (bool)$options->multipage,
@@ -624,6 +632,11 @@ SiteConfig::$debug = $debug_mode;
 SiteConfig::use_apc($options->apc);
 $extractor->fingerprints = $options->fingerprints;
 $extractor->allowedParsers = $options->allowed_parsers;
+// Default parser (3.9.5: html5php). Falls back to libxml if the configured one is not allowed.
+$_default_parser = in_array($options->default_parser, $options->allowed_parsers, true) ? $options->default_parser : 'libxml';
+$extractor->defaultParser = $_default_parser;
+SiteConfig::$global_default_parser = $_default_parser;
+unset($_default_parser);
 $extractor->parserOverride = $parser;
 if (!$images) $extractor->stripImages = true;
 if ($options->user_submitted_config && $user_submitted_config) {
@@ -644,8 +657,10 @@ if ($accept !== 'html') {
 	$feed = new SimplePie();
 	// some feeds use the text/html content type - force_feed tells SimplePie to process anyway
 	$feed->force_feed(true);
-	$feed->set_file_class('SimplePie_HumbleHttpAgent');
-	$feed->set_sanitize_class('DisableSimplePieSanitize');
+	// Registry calls replace set_file_class()/set_sanitize_class(), deprecated since SimplePie 1.3
+	// (they raise E_USER_DEPRECATED). The third argument keeps the legacy-class behaviour.
+	$feed->get_registry()->register(\SimplePie\File::class, 'SimplePie_HumbleHttpAgent', true);
+	$feed->get_registry()->register(\SimplePie\Sanitize::class, 'DisableSimplePieSanitize', true);
 	// need to assign this manually it seems
 	$feed->sanitize = new DisableSimplePieSanitize();
 	//$feed->set_feed_url($url); // colons appearing in the URL's path get encoded
@@ -1088,12 +1103,23 @@ foreach ($items as $key => $item) {
 	}
 	unset($_g, $_guid, $_ispermalink);
 	
-	// filter xss?
-	if ($xss_filter) {
+	if ($content_text_width !== null) {
+		// Plain text output (&content=text, &content=text80). The converter reads the DOM and emits only text,
+		// alt text and link targets, so nothing needs filtering afterwards. It runs on the unfiltered HTML
+		// on purpose: htmLawed leaves the text of style elements behind, which would show up as stray CSS.
+		$html = HtmlToText::convert($html, $content_text_width);
+		// An RSS description is HTML by specification, and readers render it. Text that came from escaped
+		// markup on the page (&lt;img onerror=...&gt;) is now literal markup, so escape it again for the feed.
+		// JSON is data and keeps the raw text.
+		if ($format != 'json') {
+			$html = htmlspecialchars($html, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+		}
+	} elseif ($xss_filter) {
+		// filter xss?
 		debug('Filtering HTML to remove XSS');
 		$html = htmLawed::hl($html, array('safe'=>1, 'deny_attribute'=>'style', 'comment'=>1, 'cdata'=>1));
 	}
-	
+
 	// add content
 	if ($options->summary === true) {
 		// get summary
@@ -1272,7 +1298,9 @@ if ($debug_mode) {
 }
 */
 if (!$debug_mode) {
-	if ($callback) echo "$callback("; // if $callback is set, $format also == 'json'
+	// If $callback is set, $format also == 'json'. Buffer the body so generateFeed() can send its headers
+	// (Content-Type, nosniff) before any output: echoing "$callback(" first made them fail silently.
+	if ($callback) ob_start();
 	if ($format == 'json') $output->setFormat(($callback === null) ? JSON : JSONP);
 	$add_to_cache = $options->caching;
 	// is smart cache mode enabled?
@@ -1311,7 +1339,10 @@ if (!$debug_mode) {
 	} else {
 		$output->generateFeed();
 	}
-	if ($callback) echo ');';
+	if ($callback) {
+		$_body = ob_get_clean();
+		echo "$callback($_body);";
+	}
 }
 
 ///////////////////////////////
@@ -1494,6 +1525,9 @@ function get_excerpt($text, $num_words=55, $more=null) {
 
 function url_allowed($url) {
 	global $options;
+	if (!empty($options->allowed_hosts)) {
+		return HostList::urlMatches($url, (array)$options->allowed_hosts);
+	}
 	if (!empty($options->allowed_urls)) {
 		$allowed = false;
 		foreach ($options->allowed_urls as $allowurl) {
@@ -1611,6 +1645,25 @@ function make_absolute($base, $elem) {
 		}
 		if (strtolower($elem->tagName) == $tag) make_absolute_attr($base, $elem, $attr);
 	}
+	// srcset on <img> and <picture><source> (3.9.5: relative srcset URLs rewritten to absolute form)
+	foreach (array('img', 'source') as $tag) {
+		$elems = $elem->getElementsByTagName($tag);
+		for ($i = $elems->length-1; $i >= 0; $i--) {
+			make_absolute_srcset($base, $elems->item($i));
+		}
+		if (strtolower($elem->tagName) == $tag) make_absolute_srcset($base, $elem);
+	}
+}
+// Rewrite relative URLs in an element's srcset (see Srcset::absolutize()); drop the attributes if nothing usable is left.
+function make_absolute_srcset($base, $e) {
+	if (!$e->hasAttribute('srcset')) return;
+	$value = Srcset::absolutize($e->getAttribute('srcset'), $base);
+	if ($value !== '') {
+		$e->setAttribute('srcset', $value);
+	} else {
+		$e->removeAttribute('srcset');
+		$e->removeAttribute('sizes');
+	}
 }
 function make_absolute_attr($base, $e, $attr) {
 	if ($e->hasAttribute($attr)) {
@@ -1640,30 +1693,20 @@ function make_absolute_str($base, $url) {
 	}
 }
 function make_html($dom, $inner=false) {
-	global $options;
 	static $html5 = null;
-	if ($options->html5_output) {
-		if ($html5 === null) {
-			$html5 = new Masterminds\HTML5(array('disable_html_ns' => true));
-		}
-		if (!$inner) {
-			return $html5->saveHTML($dom);
-		} else {
-			$_inner = '';
-			if ($dom->hasChildNodes()) {
-				foreach ($dom->childNodes as $child) {
-					$_inner .= $html5->saveHTML($child);
-				}
-			}
-			return $_inner;
-		}
-	} else {
-		if (!$inner) {
-			return $dom->ownerDocument->saveXML($dom);
-		} else {
-			return $dom->innerHTML;
+	if ($html5 === null) {
+		$html5 = new Masterminds\HTML5(array('disable_html_ns' => true));
+	}
+	if (!$inner) {
+		return $html5->saveHTML($dom);
+	}
+	$_inner = '';
+	if ($dom->hasChildNodes()) {
+		foreach ($dom->childNodes as $child) {
+			$_inner .= $html5->saveHTML($child);
 		}
 	}
+	return $_inner;
 }
 // returns single page response, or false if not found
 function get_single_page($item, $html, $url) {

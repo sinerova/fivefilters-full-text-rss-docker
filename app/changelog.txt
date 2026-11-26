@@ -4,7 +4,22 @@ CHANGELOG
 ------------------------------------
 3.8.2 (unreleased)
  - Removed deprecated PHP 7.2 and 7.3 calls
- 
+ - Maintained fork (PHP 8.4). This version number is unchanged: the items below bring behaviour in line with the
+   upstream 3.9 to 3.9.13 changelog, reimplemented from its descriptions (see docs/PARITY.md in the repository).
+ - New: &content=text returns plain text, wrapped at 70 characters; &content=text80 (or any width, 20 to 500) wraps there (3.9, 3.9.1)
+ - New: title, author and date are read from JSON-LD Article data; skip_json_ld: yes in a site config file turns this off (3.9.7)
+ - New: $options->allowed_hosts matches host names exactly or as subdomains. $options->allowed_urls is deprecated (3.9.5)
+ - New: ftr_allowed_hosts, ftr_allowed_urls and ftr_blocked_urls accept comma-separated lists as environment variables
+ - New: $options->default_parser, now html5php (3.9.5). Set it to libxml for the 3.8 behaviour
+ - New: Substack publications on custom domains are recognised by fingerprint (3.9.12)
+ - Changed: relative srcset URLs are rewritten to absolute form instead of being removed (3.9.5)
+ - Changed: $options->html5_output removed; HTML output always uses HTML5-PHP. &content=1 and &content=html5 are still accepted (3.9)
+ - Changed: default User-Agent strings updated (3.9.5)
+ - Changed: the meta refresh parser accepts any attribute order, delay and quoting, and ignores HTML comments (3.9.5)
+ - Bug fix: &images=0 removed nothing, because the XPath used absolute paths on a detached element (3.9.7)
+ - Bug fix: JSONP responses were sent without Content-Type and X-Content-Type-Options headers
+ - Bug fix: PHP 8.2 to 8.4 deprecations (HTML-ENTITIES conversion, implicit nullable parameters, SimplePie class setters)
+
 3.8.1 (2017-10-31)
  - Bug fix: Systems with old ICU library produced an idn_to_ascii() error
  - Compatibility test file updated to check for DOM extension

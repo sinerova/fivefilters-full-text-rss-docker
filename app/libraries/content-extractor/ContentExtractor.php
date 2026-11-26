@@ -444,20 +444,9 @@ class ContentExtractor
 			}
 		}
 
-		// strip img srcset/sizes attributes with relative URIs (src should be present and will be absolutised)
-		// TODO: absolutize srcet values rather than removing them
+		// Relative srcset URLs are no longer stripped here (3.8 behaviour): since 3.9.5 they are
+		// rewritten to absolute form together with src (see make_absolute() in makefulltextfeed.php).
 		// To remove srcset from all image elements, site config files can contain: strip: //img/@srcset
-		$elems = $xpath->query("//img[@srcset and not(contains(@srcset, '//'))]", $this->readability->dom);
-		// check for matches
-		if ($elems && $elems->length > 0) {
-			$this->debug('Stripping '.$elems->length.' srcset attributes');
-			foreach ($elems as $elem) {
-				$elem->removeAttribute('srcset');
-				if ($elem->hasAttribute('sizes')) {
-					$elem->removeAttribute('sizes');
-				}
-			}
-		}
 
 		// try to get body
 		foreach ($this->config->body as $pattern) {
@@ -768,6 +757,37 @@ class ContentExtractor
 			}
 		}
 
+		// Look inside JSON-LD elements for title, author and date (3.9.7). Disable per site with: skip_json_ld: yes
+		// Everything is read into locals on each call, so nothing carries over between items (3.9.9).
+		if (($detect_title || $detect_author || $detect_date) && !$this->config->skip_json_ld()) {
+			$_scripts = array();
+			$_lower = "translate(normalize-space(@type),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')";
+			$elems = @$xpath->query("//script[$_lower='application/ld+json']", $this->readability->dom);
+			if ($elems && $elems->length > 0) {
+				for ($i = 0; $i < $elems->length && $i < JsonLd::MAX_SCRIPTS; $i++) {
+					$_scripts[] = $elems->item($i)->textContent;
+				}
+			}
+			if ($_scripts) {
+				$_ld = JsonLd::extract($_scripts);
+				if ($detect_title && $_ld['title'] !== null) {
+					$this->title = $_ld['title'];
+					$this->debug('Title found (JSON-LD): '.$this->title);
+					$detect_title = false;
+				}
+				if ($detect_author && !empty($_ld['authors'])) {
+					$this->author = $_ld['authors'];
+					$this->debug('Author found (JSON-LD): '.implode(', ', $this->author));
+					$detect_author = false;
+				}
+				if ($detect_date && $_ld['date']) {
+					$this->date = $_ld['date'];
+					$this->debug('Date found (JSON-LD): '.date('Y-m-d H:i:s', $this->date));
+					$detect_date = false;
+				}
+			}
+		}
+
 		// still missing title or body, so we detect using Readability
 		if ($detect_title || $detect_body) {
 			$this->debug('Using Readability');
@@ -864,12 +884,16 @@ class ContentExtractor
 			}
 			// Strip images?
 			if ($this->stripImages && $this->body->hasChildNodes()) {
-				$elems = @$xpath->query("//figure | //img | //figcaption", $this->body);
+				// Paths are relative to the body: it is usually detached from the document (Readability builds it),
+				// so absolute paths such as //img never matched and &images=0 silently did nothing (fixed in upstream 3.9.7).
+				$elems = @$xpath->query(".//figure | .//picture | .//img | .//figcaption", $this->body);
 				// check for matches
 				if ($elems && $elems->length > 0) {
-					$this->debug('Stripping images: '.$elems->length.' img/figure/figcaption elements');
+					$this->debug('Stripping images: '.$elems->length.' img/picture/figure/figcaption elements');
 					for ($i=$elems->length-1; $i >= 0; $i--) {
-						@$elems->item($i)->parentNode->removeChild($elems->item($i));
+						$_elem = $elems->item($i);
+						// a nested match may already have gone with its ancestor
+						if ($_elem->parentNode !== null) $_elem->parentNode->removeChild($_elem);
 					}
 				}
 			} else {

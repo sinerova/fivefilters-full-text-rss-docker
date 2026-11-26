@@ -271,8 +271,8 @@ if (!defined('_FF_FTR_INDEX')) {
 
 		<tr>
 			<td>content</td>
-			<td><tt>0</tt>, <tt>1</tt>, <tt>html5</tt> (default)</td>
-			<td>If set to 0, the extracted content will not be included in the output. If set to 1, we'll use regular libxml output - might not be HTML5 compliant.</td>
+			<td><tt>0</tt>, <tt>text</tt>, <tt>text80</tt>, or omit for HTML</td>
+			<td>If set to 0, the extracted content will not be included in the output. If set to text, the content is converted to plain text, wrapped at 70 characters. Add a number to choose the width (<tt>text80</tt> wraps at 80, any width from 20 to 500 works). HTML output is always HTML5; the older values 1 and html5 are accepted and change nothing.</td>
 		</tr>
 		
 		<tr>
@@ -390,8 +390,8 @@ if (!defined('_FF_FTR_INDEX')) {
 
 		<tr>
 			<td>content</td>
-			<td><tt>0</tt>, <tt>1</tt> (default), <tt>html5</tt></td>
-			<td>If set to 0, the extracted content will not be included in the output. If set to html5, we'll output HTML5.</td>
+			<td><tt>0</tt>, <tt>text</tt>, <tt>text80</tt>, or omit for HTML</td>
+			<td>If set to 0, the extracted content will not be included in the output. If set to text, the content is converted to plain text, wrapped at 70 characters. Add a number to choose the width (<tt>text80</tt> wraps at 80, any width from 20 to 500 works). HTML output is always HTML5; the older values 1 and html5 are accepted and change nothing.</td>
 		</tr>
 
 		<tr>

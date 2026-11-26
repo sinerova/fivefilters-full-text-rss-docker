@@ -11,6 +11,32 @@ switch ($path) {
         readfile(__DIR__ . '/article.html');
         return true;
 
+    case '/escaped.html':
+        header('Content-Type: text/html; charset=utf-8');
+        readfile(__DIR__ . '/escaped.html');
+        return true;
+
+    case '/jsonld.html':
+        header('Content-Type: text/html; charset=utf-8');
+        readfile(__DIR__ . '/jsonld.html');
+        return true;
+
+    case '/jsonld-feed.xml':
+        // First item has JSON-LD (author, date); second has none. Used to check nothing carries over.
+        $port = $_SERVER['SERVER_PORT'] ?? 8082;
+        $base = "http://127.0.0.1:$port";
+        header('Content-Type: application/rss+xml; charset=utf-8');
+        echo '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>LD</title><link>' . $base . '/</link><description>d</description>'
+            . '<item><title>Feed title one</title><link>' . $base . '/jsonld.html</link><guid>ld1</guid><description>short</description></item>'
+            . '<item><title>Feed title two</title><link>' . $base . '/features.html</link><guid>ld2</guid><description>short</description></item>'
+            . '</channel></rss>';
+        return true;
+
+    case '/features.html':
+        header('Content-Type: text/html; charset=utf-8');
+        readfile(__DIR__ . '/features.html');
+        return true;
+
     case '/feed.xml':
         header('Content-Type: application/rss+xml; charset=utf-8');
         readfile(__DIR__ . '/feed.xml');

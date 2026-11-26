@@ -26,9 +26,11 @@ class HumbleHttpAgent
 	const MAX_RESPONSE_BYTES = 10485760;
 	const MAX_REDIRECTS = 5;
 	//const UA_BROWSER = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:2.0.1) Gecko/20100101 Firefox/4.0.1';
-	// popular user agents from https://techblog.willshouse.com/2012/01/03/most-common-user-agents/
-	const UA_BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36';
-	const UA_PHP = 'PHP/7.1';
+	// Desktop Chrome on Windows. Chrome freezes the minor/build parts of its UA string ("User-Agent reduction"),
+	// so this form stays current without chasing patch releases. Sites can still override it with http_header: user-agent.
+	const UA_BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+	// Sent when fetching feeds (some feed hosts return HTML to browsers). Major.minor only.
+	const UA_PHP = 'PHP/' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
 	const REF_GOOGLE = 'http://www.google.co.uk/url?sa=t&source=web&cd=1';
 	
 	protected $requests = array();
@@ -197,6 +199,28 @@ class HumbleHttpAgent
 		return $redirect_url;
 	}
 	
+	/**
+	 * Find the target of a <meta http-equiv="refresh"> redirect in the first 128 KiB of $html.
+	 * Handles any attribute order, quoting style and delay, "url=" in any case, and ignores
+	 * HTML comments (e.g. IE conditional comments). A refresh without a URL (reload the same
+	 * page) is not a redirect. Returns the raw (entity-encoded) URL, or false.
+	 */
+	public static function parseMetaRefresh($html) {
+		$html = (string)substr((string)$html, 0, 131072);
+		$stripped = preg_replace('/<!--.*?-->/s', '', $html);
+		if ($stripped !== null) $html = $stripped;
+		if (!preg_match_all('/<meta\b[^>]*>/i', $html, $tags)) return false;
+		foreach ($tags[0] as $tag) {
+			if (!preg_match('/\bhttp-equiv\s*=\s*(["\']?)\s*refresh\s*\1(?=[\s\/>]|$)/i', $tag)) continue;
+			if (!preg_match('/\bcontent\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))/i', $tag, $c)) continue;
+			$content = $c[1] !== '' ? $c[1] : (isset($c[2]) && $c[2] !== '' ? $c[2] : (isset($c[3]) ? $c[3] : ''));
+			if (preg_match('/^\s*\d+(?:\.\d*)?\s*[;,]\s*(?:url\s*=\s*)?(["\']?)(.+?)\1\s*$/is', $content, $m) && trim($m[2]) !== '') {
+				return trim($m[2]);
+			}
+		}
+		return false;
+	}
+
 	public function getMetaRefreshURL($url, $html) {
 		if ($html == '') return false;
 
@@ -218,10 +242,10 @@ class HumbleHttpAgent
 		}
 
 		// <meta HTTP-EQUIV="REFRESH" content="0; url=http://www.bernama.com/bernama/v6/newsindex.php?id=943513">
-		if (!preg_match('!<meta http-equiv=["\']?refresh["\']? content=["\']?[0-9];\s*url=["\']?([^"\'>]+)["\']?!i', $html, $match)) {
+		$redirect_url = self::parseMetaRefresh($html);
+		if ($redirect_url === false) {
 			return false;
 		}
-		$redirect_url = $match[1];
 		$redirect_url = htmlspecialchars_decode($redirect_url); // For Facebook!
 		if (preg_match('!^https?://!i', $redirect_url)) {
 			// already absolute

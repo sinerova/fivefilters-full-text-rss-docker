@@ -21,6 +21,15 @@ final class FeedOutputTest extends TestCase
     }
 
     private static ?string $staged = null;
+    private static ?string $errorLog = null;
+
+    private static function errorLogPath(): string
+    {
+        if (self::$errorLog === null) {
+            self::$errorLog = sys_get_temp_dir() . '/ftrfeed-errors-' . bin2hex(random_bytes(4)) . '.log';
+        }
+        return self::$errorLog;
+    }
 
     /** App copy plus the shipped custom_config.php, laid out as in the image. */
     public static function setUpBeforeClass(): void
@@ -52,7 +61,8 @@ final class FeedOutputTest extends TestCase
         array $params = array(),
         array $serverOverrides = array(),
         array $envOverrides = array(),
-        string $entryScript = 'makefulltextfeed.php'
+        string $entryScript = 'makefulltextfeed.php',
+        string $prelude = ''
     ): string {
         $script = tempnam(sys_get_temp_dir(), 'ftr');
         $allowed = var_export(array(FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT), true);
@@ -77,18 +87,48 @@ foreach ({$server} as \$_k => \$_v) {
     \$_SERVER[\$_k] = \$_v;
 }
 chdir({$app});
+{$prelude}
 include {$app} . {$target};
 PHP);
         $devnull = DIRECTORY_SEPARATOR === '\\' ? 'NUL' : '/dev/null';
-        $cmd = escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -d error_reporting=E_ALL^E_DEPRECATED '
-            . escapeshellarg($script) . ' 2>' . $devnull;
+        // Log every PHP diagnostic (including deprecations) so tearDown() can fail the test on any.
+        $cmd = escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -d error_reporting=E_ALL -d log_errors=1 -d error_log='
+            . escapeshellarg(self::errorLogPath()) . ' ' . escapeshellarg($script) . ' 2>' . $devnull;
         $out = (string)shell_exec($cmd);
         unlink($script);
         return $out;
     }
 
+    protected function tearDown(): void
+    {
+        $log = is_file(self::errorLogPath()) ? (string)file_get_contents(self::errorLogPath()) : '';
+        @unlink(self::errorLogPath());
+        $this->assertDoesNotMatchRegularExpression(
+            '/PHP (Deprecated|Warning|Notice|Fatal error|Parse error)/',
+            $log,
+            'The endpoint must not raise PHP diagnostics'
+        );
+    }
+
+    /** The shipped config caches results on disk; start every test with an empty cache so tests stay independent. */
+    private static function clearStagedCache(): void
+    {
+        $dir = self::$staged . '/cache';
+        if (!is_dir($dir)) return;
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($it as $e) {
+            if ($e->isDir()) {
+                @rmdir($e->getPathname());
+            } elseif ($e->getFilename() !== 'index.php') {
+                @unlink($e->getPathname());
+            }
+        }
+    }
+
     protected function setUp(): void
     {
+        self::clearStagedCache();
+        @unlink(self::errorLogPath());
         if (!self::fixtureReachable()) {
             $this->markTestSkipped('Fixture server not running (see tests/README.md).');
         }
@@ -133,6 +173,226 @@ PHP);
         $this->assertStringContainsString('&lt;p&gt;', $xml, 'paragraph markup is kept');
     }
 
+    /** HTML of the first RSS item's description, or '' if there is none. */
+    private static function firstItemHtml(string $xml): string
+    {
+        $rss = @simplexml_load_string($xml);
+        return ($rss && isset($rss->channel->item[0]->description)) ? (string)$rss->channel->item[0]->description : '';
+    }
+
+    private static function featuresUrl(): string
+    {
+        return 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/features.html';
+    }
+
+    /** 3.9.5: relative srcset URLs are rewritten to absolute form (3.8 removed the attribute). */
+    public function testRelativeSrcsetIsRewrittenToAbsoluteUrls(): void
+    {
+        $html = self::firstItemHtml(self::render(self::featuresUrl()));
+        $base = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT;
+        $this->assertStringContainsString('src="' . $base . '/img/a.jpg"', $html);
+        $this->assertStringContainsString('srcset="' . $base . '/img/a-1x.jpg 1x, ' . $base . '/img/a-2x.jpg 2x"', $html);
+    }
+
+    public function testSrcsetWithDangerousSchemeIsNeverEmitted(): void
+    {
+        $html = self::firstItemHtml(self::render(self::featuresUrl()));
+        $this->assertStringNotContainsString('javascript:', $html);
+        $this->assertStringNotContainsString('alert(7)', $html);
+    }
+
+    /** @return array<int, array{title:string, creator:string, pubDate:string}> */
+    private static function items(string $xml): array
+    {
+        $rss = @simplexml_load_string($xml);
+        $out = array();
+        if (!$rss) return $out;
+        foreach ($rss->channel->item as $item) {
+            $dc = $item->children('http://purl.org/dc/elements/1.1/');
+            $out[] = array('title' => (string)$item->title, 'creator' => (string)$dc->creator, 'pubDate' => (string)$item->pubDate);
+        }
+        return $out;
+    }
+
+    private static function jsonLdFeedUrl(): string
+    {
+        return 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/jsonld-feed.xml';
+    }
+
+    /** 3.9.7: title, author and date are read from JSON-LD. */
+    public function testJsonLdSuppliesTitleAuthorAndDate(): void
+    {
+        $items = self::items(self::render(self::jsonLdFeedUrl(), array('use_extracted_title' => '1')));
+        $this->assertCount(2, $items);
+        $this->assertSame('JSON-LD Headline & More', $items[0]['title'], 'headline beats <title>/<h1>, entities decoded once');
+        $this->assertSame('Ada Lovelace', $items[0]['creator'], '@id author reference resolved');
+        $this->assertSame('Thu, 11 Feb 2021 10:30:00 +0000', $items[0]['pubDate']);
+    }
+
+    /** 3.9.9: JSON-LD data must not carry over from one item to the next. */
+    public function testJsonLdDataDoesNotLeakIntoTheNextItem(): void
+    {
+        $items = self::items(self::render(self::jsonLdFeedUrl(), array('use_extracted_title' => '1')));
+        $this->assertCount(2, $items);
+        $this->assertNotSame('JSON-LD Headline & More', $items[1]['title']);
+        $this->assertSame('', $items[1]['creator'], 'second item has no JSON-LD author');
+        $this->assertNotSame($items[0]['pubDate'], $items[1]['pubDate'], 'second item has no JSON-LD date');
+    }
+
+    public function testSkipJsonLdSiteConfigDirectiveDisablesIt(): void
+    {
+        $file = self::$staged . '/site_config/custom/' . FTR_FIXTURE_HOST . '.txt';
+        file_put_contents($file, "skip_json_ld: yes\n");
+        try {
+            $items = self::items(self::render(self::jsonLdFeedUrl(), array('use_extracted_title' => '1')));
+        } finally {
+            unlink($file);
+        }
+        $this->assertCount(2, $items);
+        $this->assertNotSame('JSON-LD Headline & More', $items[0]['title']);
+        $this->assertSame('', $items[0]['creator']);
+    }
+
+    /** Parser the extractor ended up using by default, read from inside the child process. */
+    private static function defaultParserSeenBy(array $env = array(), array $params = array()): string
+    {
+        $probe = 'register_shutdown_function(function () { echo "\nPROBE:" . SiteConfig::$global_default_parser . "/" . '
+            . '(isset($GLOBALS["extractor"]) ? $GLOBALS["extractor"]->defaultParser : "none"); });';
+        $out = self::render(self::featuresUrl(), $params, array(), $env, 'makefulltextfeed.php', $probe);
+        return preg_match('/PROBE:(\S+)/', $out, $m) ? $m[1] : '';
+    }
+
+    /** 3.9.5: HTML5-PHP is the default parser. */
+    public function testHtml5ParserIsTheDefault(): void
+    {
+        $this->assertSame('html5php/html5php', self::defaultParserSeenBy());
+    }
+
+    public function testDefaultParserCanBeSetBackToLibxml(): void
+    {
+        $this->assertSame('libxml/libxml', self::defaultParserSeenBy(array('ftr_default_parser' => 'libxml')));
+    }
+
+    public function testDefaultParserFallsBackToLibxmlWhenNotAllowed(): void
+    {
+        $this->assertSame('libxml/libxml', self::defaultParserSeenBy(array('ftr_default_parser' => 'bogus')));
+    }
+
+    /** 3.9: &content=text converts the extracted content to plain text (wrapped at 70). */
+    public function testContentTextReturnsPlainTextWrappedAt70(): void
+    {
+        $text = self::firstItemHtml(self::render(self::featuresUrl(), array('content' => 'text')));
+        $this->assertStringContainsString('First paragraph of a long enough article body', $text);
+        $this->assertStringContainsString('[Responsive A]', $text, 'image alt text kept');
+        $this->assertDoesNotMatchRegularExpression('/<\/?[a-z]/i', $text, 'no markup in text output');
+        $this->assertStringNotContainsString('srcset', $text);
+        $this->assertStringNotContainsString('fixture-css-marker', $text, 'style element content must not leak into text');
+        $lines = explode("\n", $text);
+        $this->assertGreaterThan(1, count($lines));
+        foreach ($lines as $line) {
+            $this->assertLessThanOrEqual(70, mb_strlen($line, 'UTF-8'), $line);
+        }
+    }
+
+    private static function escapedUrl(): string
+    {
+        return 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/escaped.html';
+    }
+
+    /**
+     * An RSS description is HTML, so markup that the page showed as text (&lt;img onerror&gt;) must not become
+     * live markup when the text is decoded. Escaped for RSS, raw for JSON.
+     */
+    public function testTextOutputInRssCannotBecomeLiveMarkupInAReader(): void
+    {
+        $xml = self::render(self::escapedUrl(), array('content' => 'text'));
+        $desc = self::firstItemHtml($xml);
+        $flat = preg_replace('/\s+/', ' ', $desc); // the converter wraps long lines
+        $this->assertStringContainsString('Tom &amp; Jerry', $flat, 'text is HTML-escaped once for the feed');
+        $this->assertStringContainsString('&lt;img src=x onerror=alert(1)&gt;', $flat, 'the markup shown on the page is still visible as text');
+        $this->assertDoesNotMatchRegularExpression('/<\/?[a-z]/i', $desc, 'no live tags once the XML is decoded');
+        // simulate a reader: render the decoded description as HTML and look for elements
+        $dom = new DOMDocument();
+        @$dom->loadHTML('<?xml encoding="utf-8"?><div>' . $desc . '</div>');
+        $this->assertSame(0, $dom->getElementsByTagName('img')->length);
+        $this->assertSame(0, $dom->getElementsByTagName('script')->length);
+    }
+
+    public function testTextOutputInJsonKeepsTheRawText(): void
+    {
+        $json = json_decode(self::render(self::escapedUrl(), array('content' => 'text', 'format' => 'json')), true);
+        $item = $json['rss']['channel']['item'] ?? array();
+        $item = isset($item[0]) ? $item[0] : $item;
+        $flat = preg_replace('/\s+/', ' ', (string)($item['description'] ?? ''));
+        $this->assertStringContainsString('Tom & Jerry', $flat);
+        $this->assertStringContainsString('<img src=x onerror=alert(1)>', $flat, 'JSON carries the text as is');
+    }
+
+    public function testJsonLdTitleAndAuthorWithEncodedMarkupStayPlainText(): void
+    {
+        $xml = self::render(self::escapedUrl(), array('use_extracted_title' => '1'));
+        $this->assertStringNotContainsString('<img', $xml);
+        $this->assertStringNotContainsString('onerror=alert(11)', $xml);
+        $this->assertStringNotContainsString('onerror=alert(12)', $xml);
+        $items = self::items($xml);
+        $this->assertSame('Mal Lory', $items[0]['creator']);
+        $this->assertSame('Head line', $items[0]['title']);
+    }
+
+    /** 3.9.1: &content=text80 wraps at 80 characters. */
+    public function testContentText80WrapsAt80(): void
+    {
+        $text = self::firstItemHtml(self::render(self::featuresUrl(), array('content' => 'text80')));
+        $max = 0;
+        foreach (explode("\n", $text) as $line) {
+            $max = max($max, mb_strlen($line, 'UTF-8'));
+        }
+        $this->assertLessThanOrEqual(80, $max);
+        $this->assertGreaterThan(70, $max, 'wider than the default width');
+    }
+
+    public function testTextAndHtmlOutputAreCachedSeparately(): void
+    {
+        $html1 = self::firstItemHtml(self::render(self::featuresUrl()));
+        $text = self::firstItemHtml(self::render(self::featuresUrl(), array('content' => 'text')));
+        $html2 = self::firstItemHtml(self::render(self::featuresUrl()));
+        $this->assertStringContainsString('<p>', $html1);
+        $this->assertStringNotContainsString('<p>', $text);
+        $this->assertSame($html1, $html2, 'HTML request still gets HTML after a text request');
+    }
+
+    public function testTextOutputInJsonFormatAndSelfLinkKeepsTheParameter(): void
+    {
+        $json = json_decode(self::render(self::featuresUrl(), array('content' => 'text80', 'format' => 'json')), true);
+        $this->assertIsArray($json);
+        $desc = $json['rss']['channel']['item']['description'] ?? ($json['rss']['channel']['item'][0]['description'] ?? '');
+        $this->assertStringNotContainsString('<p>', (string)$desc);
+        $this->assertStringContainsString('content=text80', self::render(self::featuresUrl(), array('content' => 'text80')));
+    }
+
+    /** 3.9 removed html5_output: &content=html5 and &content=1 are accepted and change nothing. */
+    public function testLegacyHtml5ContentValuesAreAcceptedAndChangeNothing(): void
+    {
+        $default = self::firstItemHtml(self::render(self::featuresUrl()));
+        $this->assertStringContainsString('<p>', $default);
+        foreach (array('html5', '1') as $value) {
+            $this->assertSame($default, self::firstItemHtml(self::render(self::featuresUrl(), array('content' => $value))), "content=$value");
+        }
+    }
+
+    /** 3.9.7: &images=0 removes images from the output. */
+    public function testImagesZeroRemovesImages(): void
+    {
+        $with = self::firstItemHtml(self::render(self::featuresUrl()));
+        $this->assertStringContainsString('<img', $with, 'control: images are kept by default');
+        foreach (array('0', 'remove') as $value) {
+            $without = self::firstItemHtml(self::render(self::featuresUrl(), array('images' => $value)));
+            $this->assertStringContainsString('Second paragraph, also long enough', $without, 'article text is kept');
+            $this->assertStringNotContainsString('<img', $without, "images=$value");
+            $this->assertStringNotContainsString('srcset', $without, "images=$value");
+        }
+    }
+
     public function testExplicitXssZeroDoesNotDisableTheFilter(): void
     {
         $xml = self::render('http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/feed.xml', array('xss' => '0'));
@@ -150,6 +410,44 @@ PHP);
             $out = trim(self::render($target));
             $this->assertSame('This URL cannot be fetched', $out, $target);
         }
+    }
+
+    public function testAllowedHostsEnvAllowsListedHostAndBlocksOthers(): void
+    {
+        $feed = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/feed.xml';
+        $this->assertStringContainsString('<rss', self::render($feed, array(), array(), array('ftr_allowed_hosts' => FTR_FIXTURE_HOST)));
+        $this->assertSame('<strong>URL blocked</strong>', trim(self::render($feed, array(), array(), array('ftr_allowed_hosts' => 'example.com,example.org'))));
+    }
+
+    /** Subscriber URLs without a scheme (or with feed://) are normalised before the host is checked. */
+    public function testAllowedHostsAcceptsSchemelessAndFeedSchemeUrls(): void
+    {
+        $env = array('ftr_allowed_hosts' => FTR_FIXTURE_HOST);
+        $hostPort = FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT;
+        foreach (array($hostPort . '/feed.xml', 'feed://' . $hostPort . '/feed.xml', 'FEED://' . $hostPort . '/feed.xml') as $url) {
+            $out = self::render($url, array(), array(), $env);
+            $this->assertStringContainsString('<rss', $out, $url);
+            $this->assertStringNotContainsString('URL blocked', $out, $url);
+        }
+        // sec:// becomes https:// (the fixture only speaks http, so nothing is fetched): it must pass the host check, not be reported as blocked
+        $this->assertStringNotContainsString('URL blocked', self::render('sec://' . $hostPort . '/feed.xml', array(), array(), $env));
+        // and a scheme-less URL for another host is still refused
+        $this->assertSame('<strong>URL blocked</strong>', trim(self::render('example.net/feed.xml', array(), array(), $env)));
+    }
+
+    public function testAllowedHostsIsNotBypassedByTheHostAppearingElsewhereInTheUrl(): void
+    {
+        $feed = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/feed.xml?u=example.com';
+        $out = self::render($feed, array(), array(), array('ftr_allowed_hosts' => 'example.com'));
+        $this->assertSame('<strong>URL blocked</strong>', trim($out));
+    }
+
+    /** Deprecated substring option keeps working for existing configs when allowed_hosts is empty. */
+    public function testLegacyAllowedUrlsStillWorks(): void
+    {
+        $feed = 'http://' . FTR_FIXTURE_HOST . ':' . FTR_FIXTURE_PORT . '/feed.xml';
+        $this->assertStringContainsString('<rss', self::render($feed, array(), array(), array('ftr_allowed_urls' => '127.0.0.1')));
+        $this->assertSame('<strong>URL blocked</strong>', trim(self::render($feed, array(), array(), array('ftr_allowed_urls' => 'example.com'))));
     }
 
     public function testBlockedMessageDoesNotDiscloseNetworkDetails(): void
