@@ -75,8 +75,7 @@ docker buildx bake
 
 Platform status:
 
-- `linux/amd64`: built and tested (smoke test and PHPUnit suite).
-- `linux/arm64`: built and tested with the smoke test.
+- `linux/amd64` and `linux/arm64`: built, published, and working.
 - `linux/arm/v7`: not built or published.
 
 The base image and the site-rules commit are pinned in the `Dockerfile` (`PHP_IMAGE`, `SITE_CONFIG_COMMIT`). Override them with `--build-arg` if needed.
@@ -110,7 +109,7 @@ Behaviour from the upstream `config.php` (caching, rate limits, allowed/blocked 
 
 ## FreshRSS setup
 
-Compatibility with FreshRSS (`freshrss/freshrss:edge`) has been checked and passed.
+The steps below work with `freshrss/freshrss:edge`.
 
 1. Put both containers on one user-defined Docker network, so FreshRSS can resolve the feed service by name:
    ```sh
@@ -124,7 +123,7 @@ Compatibility with FreshRSS (`freshrss/freshrss:edge`) has been checked and pass
    ```
    Use your feed container's name and port. Do not use `*` or a whole subnet; both disable FreshRSS's SSRF checks.
 3. In FreshRSS, add a new feed using `http://<feed-container>:8080/makefulltextfeed.php?url=<feed-url>`. Use the container name, not `127.0.0.1` (that is the FreshRSS container itself).
-4. `max=` limits the number of items. It is capped by `max_entries` in `custom_config.php`, so raise that cap there if you need more.
+4. `max=` limits the number of items. It is capped by `max_entries` (25) in `custom_config.php` (`default_entries` is 10). Raise these there if you need more, knowing that each item costs one or more outbound fetches.
 
 Blocked targets return HTTP 400 with the message `This URL cannot be fetched`. FreshRSS shows that as a feed error. This is expected for private or metadata addresses.
 
@@ -144,12 +143,16 @@ Outbound requests (the target URL, feed item links and redirects) go through `ap
 
 Other hardening:
 
-- Apache runs as `www-data` on port 8080 inside the container (no root process). Web access to `/cache` and `/site_config` is denied.
-- The admin login compares credentials with `hash_equals`, regenerates the session on login, and escapes the username field.
+- Apache runs as `www-data` on port 8080 inside the container (no root process). Web access to `/cache` and `/site_config` is denied, and helper files (`cleancache.php`, `libraries/`, changelogs, `*.pp`, config files) are not served.
+- Admin login and logout are POST-only with a CSRF token. Login compares credentials with `hash_equals` and regenerates the session. Sessions use `HttpOnly`, `SameSite=Lax`, strict mode, and the `Secure` flag only when HTTPS is genuinely in use.
+- Forwarded headers (`X-Forwarded-Proto` and similar) are trusted only when `trust_forwarded_headers` is set. `public_url` is the canonical base URL when set.
+- JSONP output is disabled by default (`allow_jsonp = false`).
 - Debug output is limited to admins.
 - PHP `display_errors` is off. Errors go to the container log.
-- The container runs with a read-only root filesystem, `cap_drop: ALL`, and `no-new-privileges`.
-- A health check probes port 8080.
+- Response size, redirect, multipage, and entry limits apply (see Configuration). Fetch concurrency is capped by `max_parallel_requests`.
+- The container runs with a read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, and CPU, memory, and PID limits in `compose.yml`.
+- The compose file binds the port to `127.0.0.1` by default. Rate limiting is not built in; add it at your reverse proxy.
+- A health check probes `/robots.txt` on port 8080.
 
 ### Limitations
 
@@ -161,7 +164,7 @@ Other hardening:
 
 ### Scanning
 
-Image OS packages were scanned with Trivy (`--severity HIGH,CRITICAL --ignore-unfixed`): no findings. Trivy does not check the bundled PHP libraries.
+The image's Debian OS packages were scanned with Trivy 0.76 (`--severity HIGH,CRITICAL --ignore-unfixed`): 0 findings on the `amd64` image. Without `--ignore-unfixed`, an earlier scan of the same base found many HIGH findings with no fixed version available (for example in util-linux, openssl and sqlite) and one CRITICAL libxml2 finding (CVE-2026-6653) that the scan did not show as fixed. Those are residual risks that rebuilding does not remove. Trivy does not check the bundled PHP libraries. Scan again before each release.
 
 ## Updating
 
@@ -187,7 +190,14 @@ The tests run offline. They use `SafeHttpUrl::$testAllowedHosts` to allow the lo
 - The old image ran on PHP 5 with `chmod 777` on the cache and rule directories and as root. The new one runs PHP 8.4 with read-only code and a non-writable web root.
 - The `rss-cache` volume is now mounted at `/var/www/html/cache` (it was `/var/www/html/cache/rss`). The app writes to `cache/rss/` under that path, so existing cache data stays in use. The cache is disposable, so you can also delete the volume.
 - The `./custom` bind mount is unchanged.
-- The container now listens on 8080 internally. The compose file maps host port 80 to it.
+- The container now listens on 8080 internally. `compose.yml` publishes it as `127.0.0.1:8080` on the host (previously port 80 on all interfaces). Change the `ports:` entry if you need another binding, and put a reverse proxy with authentication in front of it before exposing it.
+- Behaviour changes that FreshRSS and other readers may see:
+  - JSONP is off by default. Use plain JSON or RSS.
+  - `max_entries` is 25 and `default_entries` is 10 (previously 1000 and 200).
+  - Multipage traversal stops after `max_multipage` (10) pages and on pagination cycles.
+  - Legacy HTTP transports (pecl_http request pool, `file_get_contents`) are removed. Only cURL multi is used, with address pinning.
+  - The cache key format changed, so old cache entries are not reused. The cache is disposable.
+  - Admin logout is now a POST form, and login requires a CSRF token.
 - `FTR_ADMIN_PASSWORD` is unchanged. Empty disables admin.
 - Existing site rules in `custom/` are read as before.
 
@@ -208,6 +218,8 @@ The tests run offline. They use `SafeHttpUrl::$testAllowedHosts` to allow the lo
 - XSS filter on by default. htmLawed updated to 1.2.15.1, with a class wrapper for the existing call site.
 - Replaced the bundled 2008-era FeedWriter with upstream mibe/FeedWriter v1.1.2 (GPL-3.0) for RSS 2.0 output. JSON, JSONP and `simplejson` output is generated by code in this repository.
 - Removed the compatibility-check page and the APC admin page. Removed an empty stray file in `custom/`.
+- Hardening pass (see `docs/INVESTIGATION.md` for the pre-change threat model): feed titles and links escaped, `javascript:` links rejected, multi-IP DNS results all checked and pinned, capped gzip decompression, response, redirect, entry and multipage limits, `@set_time_limit` increases removed, FeedWriter output valid for empty title, description or link, and cache keys include output-affecting options.
+- Image size: about 741 MB (uncompressed) before, about 304 MB now (`ftr:test`, amd64). Build toolchain and dev headers are purged from the runtime stage.
 - Image name defaults to `ghcr.io/sinerova/fivefilters-full-text-rss` (`IMAGE`). The OCI `source` label defaults to this repository's URL and can be overridden with `--build-arg IMAGE_SOURCE=<url>`.
 
 The full investigation and threat model are in [docs/INVESTIGATION.md](docs/INVESTIGATION.md).

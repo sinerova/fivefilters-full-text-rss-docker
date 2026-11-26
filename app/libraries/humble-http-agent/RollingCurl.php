@@ -250,6 +250,7 @@ class RollingCurl implements Countable {
         curl_setopt_array($ch, $options);
         $output = curl_exec($ch);
         $info = curl_getinfo($ch);
+        $info['curl_errno'] = curl_errno($ch);
 
         // it's not neccesary to set a callback for one-off requests
         if ($this->callback) {
@@ -308,6 +309,7 @@ class RollingCurl implements Countable {
 
                 // get the info and content returned on the request
                 $info = curl_getinfo($done['handle']);
+                $info['curl_errno'] = $done['result'] ?? 0;
                 $output = curl_multi_getcontent($done['handle']);
 
                 // send the return values to the callback function.

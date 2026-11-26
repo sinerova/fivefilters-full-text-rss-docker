@@ -10,6 +10,17 @@ final class SafeHttpUrlTest extends TestCase
     protected function setUp(): void
     {
         SafeHttpUrl::$testAllowedHosts = null;
+        if (property_exists(SafeHttpUrl::class, 'dnsResolver')) {
+            SafeHttpUrl::$dnsResolver = null;
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        SafeHttpUrl::$testAllowedHosts = null;
+        if (property_exists(SafeHttpUrl::class, 'dnsResolver')) {
+            SafeHttpUrl::$dnsResolver = null;
+        }
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('blockedUrls')]
@@ -100,5 +111,68 @@ final class SafeHttpUrlTest extends TestCase
         $this->assertFalse(SafeHttpUrl::resolve('http://169.254.169.254/'));
         SafeHttpUrl::$testAllowedHosts = null;
         $this->assertFalse(SafeHttpUrl::resolve('http://127.0.0.1:' . FTR_FIXTURE_PORT . '/x'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('blockedReservedIpv6Urls')]
+    public function testBlocksSpecialUseIpv6RangesWithinGlobalUnicast(string $url): void
+    {
+        $this->assertFalse(SafeHttpUrl::resolve($url), "should block special-use IPv6: $url");
+    }
+
+    public static function blockedReservedIpv6Urls(): array
+    {
+        return [
+            'teredo 2001::/32' => ['http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/'],
+            'documentation 2001:db8::/32' => ['http://[2001:db8::1]/'],
+            'benchmarking 2001:2::/48' => ['http://[2001:2::1]/'],
+            'orchid 2001:10::/28' => ['http://[2001:10::1]/'],
+            'orchid v2 2001:20::/28' => ['http://[2001:20::1]/'],
+            'nat64 local 64:ff9b:1::/48' => ['http://[64:ff9b:1::10.0.0.1]/'],
+            'discard 100::/64' => ['http://[100::1]/'],
+        ];
+    }
+
+    public function testDualStackResolutionKeepsAllPublicAddressesAndFormatsResolveEntry(): void
+    {
+        $this->assertTrue(property_exists(SafeHttpUrl::class, 'dnsResolver'), 'SafeHttpUrl::$dnsResolver seam required');
+        SafeHttpUrl::$dnsResolver = function (string $host): array {
+            $this->assertSame('dualstack.example', $host);
+            return array('2606:4700:4700::1111', '93.184.216.34', '93.184.216.34');
+        };
+        $target = SafeHttpUrl::resolve('https://dualstack.example/feed.xml');
+        $this->assertIsArray($target);
+        $this->assertSame(array('2606:4700:4700::1111', '93.184.216.34'), $target['ips'] ?? null);
+        $this->assertSame('dualstack.example:443:[2606:4700:4700::1111],93.184.216.34', SafeHttpUrl::formatResolveEntry($target));
+
+        $v6Literal = SafeHttpUrl::resolve('http://[2606:4700:4700::1111]:8080/feed.xml');
+        $this->assertIsArray($v6Literal);
+        $this->assertSame('[2606:4700:4700::1111]:8080:[2606:4700:4700::1111]', SafeHttpUrl::formatResolveEntry($v6Literal));
+    }
+
+    public function testMixedPublicAndPrivateDnsAnswerIsRejectedOutright(): void
+    {
+        $this->assertTrue(property_exists(SafeHttpUrl::class, 'dnsResolver'));
+        SafeHttpUrl::$dnsResolver = fn(string $h) => array('93.184.216.34', '10.0.0.5');
+        $this->assertFalse(SafeHttpUrl::resolve('http://mixed-v4.example/'));
+
+        SafeHttpUrl::$dnsResolver = fn(string $h) => array('2606:4700:4700::1111', '::1');
+        $this->assertFalse(SafeHttpUrl::resolve('http://mixed-v6.example/'));
+    }
+
+    public function testLegacyUnpinnableTransportsAreDisabled(): void
+    {
+        try {
+            new HumbleHttpAgent(null, HumbleHttpAgent::METHOD_FILE_GET_CONTENTS);
+            $this->fail('METHOD_FILE_GET_CONTENTS must be rejected');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('METHOD_CURL_MULTI', $e->getMessage());
+        }
+
+        try {
+            new HumbleHttpAgent(null, HumbleHttpAgent::METHOD_REQUEST_POOL);
+            $this->fail('METHOD_REQUEST_POOL must be rejected');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('METHOD_CURL_MULTI', $e->getMessage());
+        }
     }
 }

@@ -3,13 +3,15 @@ services:
     build: .
     # Override IMAGE to publish under a different registry path.
     image: "${IMAGE:-ghcr.io/sinerova/fivefilters-full-text-rss}:latest"
-    mem_limit: 2G
+    cpus: 1.0
+    mem_limit: 1G
+    pids_limit: 128
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /tmp
-      - /run/apache2
-      - /var/lock/apache2
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+      - /run/apache2:size=16m,mode=1777,noexec,nosuid,nodev
+      - /var/lock/apache2:size=16m,mode=1777,noexec,nosuid,nodev
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -21,8 +23,9 @@ services:
     volumes:
       - "rss-cache:/var/www/html/cache"
       - "./custom:/var/www/html/site_config/custom"
+    # Bound to loopback by default; place behind an authenticating/rate-limiting reverse proxy for network exposure.
     ports:
-      - "80:8080"
+      - "127.0.0.1:8080:8080"
     networks:
       - ftr
 volumes:

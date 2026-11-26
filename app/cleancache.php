@@ -27,8 +27,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // the cache cleanup process. It will not run if it's called cleancache.php.
 
 error_reporting(E_ALL ^ E_NOTICE);
-ini_set("display_errors", 1);
-@set_time_limit(120);
+ini_set("display_errors", 0);
+ini_set("log_errors", 1);
 
 // check file name
 if (basename(__FILE__) == 'cleancache.php') die('cleancache.php must be renamed');
@@ -82,8 +82,8 @@ $backendOptions = array(
 	'read_control' => true,
 	'read_control_type' => 'strlen',
 	'hashed_directory_level' => $options->cache_directory_level,
-	'hashed_directory_perm' => 0777,
-	'cache_file_perm' => 0664,
+	'hashed_directory_perm' => 0750,
+	'cache_file_perm' => 0640,
 	'file_name_prefix' => 'ff'
 );
 $cache = Zend_Cache::factory('Core', 'File', $frontendOptions, $backendOptions);
@@ -103,8 +103,8 @@ $backendOptions = array(
 	'read_control' => true,
 	'read_control_type' => 'strlen',
 	'hashed_directory_level' => $options->cache_directory_level,
-	'hashed_directory_perm' => 0777,
-	'cache_file_perm' => 0664,
+	'hashed_directory_perm' => 0750,
+	'cache_file_perm' => 0640,
 	'file_name_prefix' => 'ff'
 );
 $cache = Zend_Cache::factory('Core', 'File', $frontendOptions, $backendOptions);

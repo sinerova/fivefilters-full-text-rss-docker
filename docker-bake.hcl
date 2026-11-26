@@ -12,7 +12,7 @@ group "default" {
 
 target "all" {
   tags = ["${IMAGE}:latest", "${IMAGE}:${VERSION}"]
-  # linux/arm64 is built and tested with the smoke test. linux/arm/v7 is excluded.
+  # Published for linux/amd64 and linux/arm64. linux/arm/v7 is excluded.
   platforms = ["linux/amd64", "linux/arm64"]
 }
 

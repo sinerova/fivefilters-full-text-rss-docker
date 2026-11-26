@@ -35,6 +35,7 @@ class HumbleHttpAgent
 	protected $redirectQueue = array();
 	protected $requestOptions;
 	protected $maxParallelRequests = 5;
+	protected $maxResponseBytes = self::MAX_RESPONSE_BYTES;
 	protected $cache = null; //TODO
 	protected $httpContext;
 	protected $curlOptions;
@@ -70,71 +71,63 @@ class HumbleHttpAgent
 	function __construct($requestOptions=null, $method=null) {
 		$this->userAgentDefault = self::UA_BROWSER;
 		$this->referer = self::REF_GOOGLE;
-		// set the request method
-		if (in_array($method, array(1,2,4))) {
-			$this->method = $method;
-		} else {
-			if (class_exists('http\Client\Request')) {
-				$this->method = self::METHOD_REQUEST_POOL;
-			} elseif (function_exists('curl_multi_init')) {
-				$this->method = self::METHOD_CURL_MULTI;
-			} else {
-				$this->method = self::METHOD_FILE_GET_CONTENTS;
-			}
+		// Only METHOD_CURL_MULTI is allowed because legacy transports (pecl_http RequestPool
+		// and file_get_contents) cannot pin resolved IPs via CURLOPT_RESOLVE against DNS rebinding.
+		if ($method !== null && $method !== self::METHOD_CURL_MULTI) {
+			throw new \InvalidArgumentException(
+				'Unsupported HTTP transport method; only HumbleHttpAgent::METHOD_CURL_MULTI is supported.'
+			);
 		}
-		if ($this->method == self::METHOD_CURL_MULTI) {
-			require_once(dirname(__FILE__).'/RollingCurl.php');
+		if (!function_exists('curl_multi_init')) {
+			throw new \RuntimeException('cURL multi support is required for HumbleHttpAgent::METHOD_CURL_MULTI.');
 		}
-		// create cookie jar
-		// $this->cookieJar = new CookieJar();
-		// set request options (redirect must be 0)
-		// HTTP PECL (http://php.net/manual/en/http.request.options.php)
+		$this->method = self::METHOD_CURL_MULTI;
+		require_once(dirname(__FILE__).'/RollingCurl.php');
+
 		$this->requestOptions = array(
 			'timeout' => 15,
-			'connecttimeout' => 15,
+			'connecttimeout' => 10,
 			'dns_cache_timeout' => 300,
-			'redirect' => 0 // we handle redirects manually so we can rewrite the new hashbang URLs that are creeping up over the web
-			// TODO: test onprogress?
+			'redirect' => 0 // handled manually so every hop passes SafeHttpUrl::resolve()
 		);
 		if (is_array($requestOptions)) {
 			$this->requestOptions = array_merge($this->requestOptions, $requestOptions);
 		}
-		// HTTP file_get_contents
-		$this->httpContext = array(
-			'http' => array(
-				'ignore_errors' => true,
-				'timeout' => $this->requestOptions['timeout'],
-				'max_redirects' => $this->requestOptions['redirect'],
-				'header' => "Accept: */*\r\n"
-				)
-			);
-		// HTTP cURL
-		if ($this->method === self::METHOD_CURL_MULTI) {
-			$this->curlOptions = array(
-				CURLOPT_CONNECTTIMEOUT => min(10, $this->requestOptions['timeout']),
-				CURLOPT_TIMEOUT => $this->requestOptions['timeout'],
-				// Always verify TLS certificates (was disabled upstream).
-				CURLOPT_SSL_VERIFYPEER => true,
-				CURLOPT_SSL_VERIFYHOST => 2,
-				// Only plain HTTP(S); never file://, gopher://, etc. on redirect or initial request.
-				CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-				CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-			);
+		if (isset($this->requestOptions['max_response_bytes'])) {
+			$this->maxResponseBytes = max(1024, (int)$this->requestOptions['max_response_bytes']);
 		}
-		// Use proxy?
+		if (isset($this->requestOptions['max_redirects'])) {
+			$this->maxRedirects = max(0, min(10, (int)$this->requestOptions['max_redirects']));
+		} else {
+			$this->maxRedirects = self::MAX_REDIRECTS;
+		}
+		if (isset($this->requestOptions['max_parallel_requests'])) {
+			$this->setMaxParallelRequests($this->requestOptions['max_parallel_requests']);
+		}
+
+		$maxBytes = $this->maxResponseBytes;
+		$timeout = max(1, (int)$this->requestOptions['timeout']);
+		$this->curlOptions = array(
+			CURLOPT_CONNECTTIMEOUT => min(10, $timeout),
+			CURLOPT_TIMEOUT => $timeout,
+			// Always verify TLS certificates (was disabled upstream).
+			CURLOPT_SSL_VERIFYPEER => true,
+			CURLOPT_SSL_VERIFYHOST => 2,
+			// Only plain HTTP(S); never file://, gopher://, etc. on redirect or initial request.
+			CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+			CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+			CURLOPT_NOPROGRESS => false,
+			CURLOPT_PROGRESSFUNCTION => function ($resource, $dlTotal, $dlNow) use ($maxBytes) {
+				return ($dlNow > $maxBytes) ? 1 : 0;
+			},
+		);
+		// Use proxy? Note: SafeHttpUrl::resolve() still validates scheme, port, and local DNS
+		// answers on every hop so proxy configuration never bypasses SSRF checks, but an HTTP
+		// proxy performs its own upstream DNS resolution and must enforce egress filtering itself.
 		if (isset($this->requestOptions['proxyhost']) && $this->requestOptions['proxyhost']) {
-			// For file_get_contents (see http://stackoverflow.com/a/1336419/407938)			
-			$this->httpContext['http']['proxy'] = 'tcp://'.$this->requestOptions['proxyhost'];
-			$this->httpContext['http']['request_fulluri'] = true;
-			// For cURL (see http://stackoverflow.com/a/9247672/407938)
-			if ($this->method === self::METHOD_CURL_MULTI) {
-				$this->curlOptions[CURLOPT_PROXY] = $this->requestOptions['proxyhost'];
-			}
+			$this->curlOptions[CURLOPT_PROXY] = $this->requestOptions['proxyhost'];
 			if (isset($this->requestOptions['proxyauth'])) {
-				$this->httpContext['http']['header'] .= "Proxy-Authorization: Basic ".base64_encode($this->requestOptions['proxyauth'])."\r\n";
-				if ($this->method === self::METHOD_CURL_MULTI) {
-					$this->curlOptions[CURLOPT_PROXYUSERPWD] = $this->requestOptions['proxyauth'];
-				}
+				$this->curlOptions[CURLOPT_PROXYUSERPWD] = $this->requestOptions['proxyauth'];
 			}
 		}
 	}
@@ -317,7 +310,7 @@ class HumbleHttpAgent
 	}
 	
 	public function setMaxParallelRequests($max) {
-		$this->maxParallelRequests = $max;
+		$this->maxParallelRequests = max(1, min(20, (int)$max));
 	}
 	
 	public function validateUrl($url) {
@@ -349,6 +342,7 @@ class HumbleHttpAgent
 			$this->debug("Following redirects #$redirects...");
 			$this->fetchAllOnce($this->redirectQueue, $isRedirect=true);
 		}
+		$this->redirectQueue = array();
 		$this->deleteCookies();
 	}
 	
@@ -357,10 +351,10 @@ class HumbleHttpAgent
 		if (!$isRedirect) $urls = array_unique($urls);
 		if (empty($urls)) return;
 		
-		//////////////////////////////////////////////////////
-		// parallel (HTTP extension)
 		if ($this->method == self::METHOD_REQUEST_POOL) {
-			$this->debug('Starting parallel fetch (HTTP Extension)');
+			throw new \LogicException('METHOD_REQUEST_POOL is disabled; only METHOD_CURL_MULTI is supported.');
+		}
+		if (false) {
 			try {
 				while (count($urls) > 0) {
 					$this->debug('Processing set of '.min($this->maxParallelRequests, count($urls)));
@@ -626,8 +620,8 @@ class HumbleHttpAgent
 							continue;
 						}
 						$reqCurlOptions = $this->curlOptions;
-						// Pin the connection to the address we validated (defeats DNS rebinding).
-						$reqCurlOptions[CURLOPT_RESOLVE] = array($target['host'].':'.$target['port'].':'.$target['ip']);
+						// Pin the connection to all validated addresses (defeats DNS rebinding, keeps dual-stack fallback).
+						$reqCurlOptions[CURLOPT_RESOLVE] = array(SafeHttpUrl::formatResolveEntry($target));
 						$httpRequest = new RollingCurlRequest($req_url, $_meth, null, $headers, $reqCurlOptions);
 						$httpRequest->set_original_url($orig);
 						$this->requests[$orig] = array('headers'=>null, 'body'=>null, 'httpRequest'=>$httpRequest);
@@ -642,6 +636,7 @@ class HumbleHttpAgent
 					$this->debug('Received responses');
 					foreach($subset as $orig => $url) {
 						if (!$isRedirect) $orig = $url;
+						if (!isset($this->requests[$orig]['status_code'])) continue;
 						// $this->requests[$orig]['headers']
 						// $this->requests[$orig]['body']
 						// $this->requests[$orig]['effective_url']
@@ -682,7 +677,7 @@ class HumbleHttpAgent
 							// Based on Google's spec: https://developers.google.com/webmasters/ajax-crawling/docs/specification
 							if (isset($this->requests[$orig]['body'])) {
 								$redirectURL = $this->getRedirectURLfromHTML($this->requests[$orig]['effective_url'], substr($this->requests[$orig]['body'], 0, 150000));
-								if ($redirectURL) {
+								if ($redirectURL && $this->validateUrl($redirectURL)) {
 									$this->redirectQueue[$orig] = $redirectURL;
 								}
 							}
@@ -695,8 +690,11 @@ class HumbleHttpAgent
 		}
 
 		//////////////////////////////////////////////////////
-		// sequential (file_get_contents)
+		// sequential (file_get_contents) — disabled (cannot pin IPs)
 		else {
+			throw new \LogicException('METHOD_FILE_GET_CONTENTS is disabled; only METHOD_CURL_MULTI is supported.');
+		}
+		if (false) {
 			$this->debug('Starting sequential fetch (file_get_contents)');
 			$this->debug('Processing set of '.count($urls));
 			foreach ($urls as $orig => $url) {
@@ -834,18 +832,21 @@ class HumbleHttpAgent
 	
 	public function handleCurlResponse($response, $info, $request) {
 		$orig = $request->url_original;
-		if (($info['size_download'] ?? 0) > self::MAX_RESPONSE_BYTES) {
-			// Transfer was aborted by the size cap: treat as a failed fetch, not an empty page.
-			$this->debug('Response exceeds '.self::MAX_RESPONSE_BYTES.' bytes, aborted: '.$request->url_original);
+		$maxBytes = $this->maxResponseBytes;
+		$headerSize = (int)($info['header_size'] ?? 0);
+		$bodyLen = is_string($response) ? max(0, strlen($response) - $headerSize) : 0;
+		if (!empty($info['curl_errno']) || $response === false || ($info['size_download'] ?? 0) > $maxBytes || $bodyLen > $maxBytes) {
+			// Transfer failed or was aborted by the size/time cap: treat as a failed fetch, not a valid page.
+			$this->debug('Transfer failed or exceeded '.$maxBytes.' bytes, aborted: '.$request->url_original);
 			$this->requests[$orig]['headers'] = '';
 			$this->requests[$orig]['body'] = null;
 			$this->requests[$orig]['method'] = $request->method;
-			$this->requests[$orig]['effective_url'] = $info['url'];
+			$this->requests[$orig]['effective_url'] = $info['url'] ?? $orig;
 			$this->requests[$orig]['status_code'] = 0;
 			return;
 		}
-		$this->requests[$orig]['headers'] = substr($response, 0, $info['header_size']);
-		$this->requests[$orig]['body'] = substr($response, $info['header_size']);
+		$this->requests[$orig]['headers'] = substr($response, 0, $headerSize);
+		$this->requests[$orig]['body'] = substr($response, $headerSize);
 		$this->requests[$orig]['method'] = $request->method;
 		$this->requests[$orig]['effective_url'] = $info['url'];
 		$this->requests[$orig]['status_code'] = (int)$info['http_code'];
@@ -898,16 +899,30 @@ class HumbleHttpAgent
 		}
 		*/
 		if ($remove && $response) unset($this->requests[$url]);
-		if ($gzdecode && $response && stripos($response['headers'], 'Content-Encoding: gzip')) {
-			if ($html = @gzdecode($response['body'])) {
-				$response['body'] = $html;
+		$maxBytes = $this->maxResponseBytes;
+		if ($response && isset($response['body']) && strlen($response['body']) > $maxBytes) {
+			$this->debug("Response body exceeds maxResponseBytes ($maxBytes)");
+			unset($this->requests[$url]);
+			return false;
+		}
+		if ($gzdecode && $response && isset($response['headers']) && preg_match('/^Content-Encoding:\s*(?:gzip|x-gzip)\b/im', $response['headers'])) {
+			$decoded = @gzdecode($response['body'], $maxBytes);
+			if ($decoded === false || strlen($decoded) > $maxBytes) {
+				$this->debug('Failed to gunzip response body or decompressed size exceeded limit');
+				unset($this->requests[$url]);
+				return false;
+			}
+			$response['body'] = $decoded;
+			$response['headers'] = preg_replace('/^Content-Encoding:\s*(?:gzip|x-gzip)[^\r\n]*\r?\n?/im', '', $response['headers']);
+			if (!$remove && isset($this->requests[$url])) {
+				$this->requests[$url] = $response;
 			}
 		}
 		return $response;
 	}
 	
 	public function parallelSupport() {
-		return class_exists('http\Client') || function_exists('curl_multi_init');
+		return function_exists('curl_multi_init');
 	}
 	
 	private function headerOnlyType($headers) {

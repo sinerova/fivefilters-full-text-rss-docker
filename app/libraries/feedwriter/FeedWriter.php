@@ -120,6 +120,7 @@ class FeedWriter
     {
         if ($this->format === JSON || $this->format === JSONP) {
             header('Content-type: ' . ($this->format === JSON ? 'application/json' : 'application/javascript') . '; charset=UTF-8');
+            header('X-content-type-options: nosniff');
             $doc = $this->jsonDocument();
             echo json_encode($this->simpleJson ? $this->simpleDocument($doc) : $doc);
             return;
@@ -132,34 +133,80 @@ class FeedWriter
     }
 
     /**
+     * Accept only http:// or https:// URLs without control characters.
+     */
+    public static function sanitizeHttpUrl($url)
+    {
+        if (!is_string($url)) {
+            return '';
+        }
+        $url = trim($url, " \t\r\n\0\x0B");
+        if ($url === '' || preg_match('/[\x00-\x1f\x7f]/', $url)) {
+            return '';
+        }
+        if (!preg_match('/^https?:\/\/.+/i', $url)) {
+            return '';
+        }
+        return $url;
+    }
+
+    /**
      * RSS 2.0 document built with the pinned upstream library.
      */
     public function rssDocument()
     {
-        $link = ($this->link !== null && $this->link !== '') ? $this->link : ($this->alternate['url'] ?? 'http://localhost/');
+        $safeLink = self::sanitizeHttpUrl($this->link);
+        $safeAlt = ($this->alternate !== null) ? self::sanitizeHttpUrl($this->alternate['url']) : '';
+        $link = ($safeLink !== '') ? $safeLink : (($safeAlt !== '') ? $safeAlt : 'http://localhost/');
+        $title = ($this->title !== null && $this->title !== '') ? $this->title : 'RSS2 Feed';
+        $description = ($this->description !== null && $this->description !== '') ? $this->description : $title;
+
         $feed = new FeedWriter\RSS2();
         $feed->addNamespace('media', 'http://search.yahoo.com/mrss/');
         $feed->removeCDATAEncoding(array('description', 'content:encoded', 'summary'));
-        $feed->setTitle($this->title !== '' ? $this->title : 'RSS2 Feed');
-        $feed->setLink($link);
-        $feed->setDescription($this->description !== null && $this->description !== '' ? $this->description : $this->title);
+        // Use setChannelElement directly because upstream setTitle/setDescription/setLink/setImage
+        // call PHP empty(), which rejects valid strings like "0".
+        $feed->setChannelElement('title', $title);
+        $feed->setChannelElement('link', $link);
+        $feed->setChannelElement('description', $description);
         if ($this->ttl !== null) {
             $feed->setChannelElement('ttl', (string)$this->ttl);
         }
-        if ($this->image !== null && $this->image['url'] !== '' && $this->image['title'] !== '' && $this->image['link'] !== '') {
-            $feed->setImage($this->image['url'], $this->image['title'], $this->image['link']);
+        if ($this->image !== null) {
+            $imgUrl = self::sanitizeHttpUrl($this->image['url']);
+            if ($imgUrl !== '') {
+                $imgLink = self::sanitizeHttpUrl($this->image['link']);
+                if ($imgLink === '') {
+                    $imgLink = $link;
+                }
+                $imgTitle = ($this->image['title'] !== '') ? $this->image['title'] : $title;
+                $feed->setChannelElement('image', array('title' => $imgTitle, 'link' => $imgLink, 'url' => $imgUrl));
+            }
         }
-        if ($this->self !== null && $this->self !== '') {
-            $feed->setSelfLink($this->self);
+        $safeSelf = self::sanitizeHttpUrl($this->self);
+        if ($safeSelf !== '') {
+            $feed->setSelfLink($safeSelf);
         }
-        if ($this->alternate !== null && $this->alternate['url'] !== '') {
-            $feed->setAtomLink($this->alternate['url'], 'alternate', null, null, $this->alternate['title'] ?: null);
+        if ($safeAlt !== '') {
+            $attrs = array('href' => $safeAlt, 'rel' => 'alternate');
+            if ($this->alternate['title'] !== '') {
+                $attrs['title'] = $this->alternate['title'];
+            }
+            $feed->setChannelElement('atom:link', '', $attrs, true);
         }
-        if ($this->related !== null && $this->related['url'] !== '') {
-            $feed->setAtomLink($this->related['url'], 'related', null, null, $this->related['title'] ?: null);
+        $safeRel = ($this->related !== null) ? self::sanitizeHttpUrl($this->related['url']) : '';
+        if ($safeRel !== '') {
+            $attrs = array('href' => $safeRel, 'rel' => 'related');
+            if ($this->related['title'] !== '') {
+                $attrs['title'] = $this->related['title'];
+            }
+            $feed->setChannelElement('atom:link', '', $attrs, true);
         }
         foreach ($this->hubs as $hub) {
-            $feed->setAtomLink($hub, 'hub');
+            $safeHub = self::sanitizeHttpUrl($hub);
+            if ($safeHub !== '') {
+                $feed->setAtomLink($safeHub, 'hub');
+            }
         }
         foreach ($this->items as $item) {
             $feed->addItem($item->buildRss($feed));
@@ -177,17 +224,29 @@ class FeedWriter
      */
     public function jsonDocument()
     {
-        $link = ($this->link !== null && $this->link !== '') ? $this->link : ($this->alternate['url'] ?? 'http://localhost/');
+        $safeLink = self::sanitizeHttpUrl($this->link);
+        $safeAlt = ($this->alternate !== null) ? self::sanitizeHttpUrl($this->alternate['url']) : '';
+        $link = ($safeLink !== '') ? $safeLink : (($safeAlt !== '') ? $safeAlt : 'http://localhost/');
+        $title = ($this->title !== null && $this->title !== '') ? $this->title : 'RSS2 Feed';
+        $description = ($this->description !== null && $this->description !== '') ? $this->description : $title;
         $channel = array(
-            'title' => $this->title,
+            'title' => $title,
             'link' => $link,
-            'description' => $this->description !== null && $this->description !== '' ? $this->description : $this->title,
+            'description' => $description,
         );
         if ($this->ttl !== null) {
             $channel['ttl'] = $this->ttl;
         }
         if ($this->image !== null) {
-            $channel['image'] = $this->image;
+            $imgUrl = self::sanitizeHttpUrl($this->image['url']);
+            if ($imgUrl !== '') {
+                $imgLink = self::sanitizeHttpUrl($this->image['link']);
+                if ($imgLink === '') {
+                    $imgLink = $link;
+                }
+                $imgTitle = ($this->image['title'] !== '') ? $this->image['title'] : $title;
+                $channel['image'] = array('title' => $imgTitle, 'link' => $imgLink, 'url' => $imgUrl);
+            }
         }
         $items = array();
         foreach ($this->items as $item) {

@@ -28,6 +28,9 @@ final class HttpFetchGuardTest extends TestCase
     protected function tearDown(): void
     {
         SafeHttpUrl::$testAllowedHosts = null;
+        if (property_exists(SafeHttpUrl::class, 'testHostIpMap')) {
+            SafeHttpUrl::$testHostIpMap = null;
+        }
     }
 
     private static function fixtureReachable(): bool
@@ -113,6 +116,76 @@ final class HttpFetchGuardTest extends TestCase
         $r = self::agent()->get(self::base() . '/broken-feed.xml');
         $this->assertIsArray($r);
         $this->assertStringContainsString('<rss><channel><title>Unclosed', $r['body']);
+    }
+
+    public function testValidGzipResponseDecompressesCleanly(): void
+    {
+        $r = self::agent()->get(self::base() . '/gzip-ok.html');
+        $this->assertIsArray($r);
+        $this->assertSame(200, $r['status_code']);
+        $this->assertStringContainsString('Fixture Article', $r['body']);
+    }
+
+    public function testGzipBombExceedingDecompressedLimitFailsClosed(): void
+    {
+        // ~15 KiB over the wire expands to 15 MiB (> 10 MiB cap): must fail closed without OOM.
+        $r = self::agent()->get(self::base() . '/gzip-bomb.html');
+        $this->assertFalse($r, 'decompression bomb exceeding cap must fail closed');
+    }
+
+    public function testCorruptGzipResponseFailsClosedInsteadOfReturningBinaryGarbage(): void
+    {
+        $r = self::agent()->get(self::base() . '/gzip-corrupt.html');
+        $this->assertFalse($r, 'corrupt gzip body must not be returned as valid HTML');
+    }
+
+    public function testMetaRefreshToBlockedTargetsIsNeverQueued(): void
+    {
+        $agent = self::agent();
+        $agent->fetchAll(array(
+            self::base() . '/meta-refresh-internal.html',
+            self::base() . '/meta-refresh-file.html',
+        ));
+        $requests = self::requestsOf($agent);
+        foreach ($requests as $url => $req) {
+            $eff = (string)($req['effective_url'] ?? '');
+            $this->assertStringNotContainsString(':9/pwn', $eff);
+            $this->assertStringStartsNotWith('file:', $eff);
+        }
+    }
+
+    public function testDualStackFallsBackToSecondPinnedAddressWhenFirstIsUnreachable(): void
+    {
+        $this->assertTrue(property_exists(SafeHttpUrl::class, 'testHostIpMap'), 'SafeHttpUrl::$testHostIpMap seam required');
+        SafeHttpUrl::$testHostIpMap = array(
+            'dualstack.test:' . FTR_FIXTURE_PORT => array('2606:4700:4700::1111', '127.0.0.1'),
+        );
+        $r = self::agent(3)->get('http://dualstack.test:' . FTR_FIXTURE_PORT . '/article.html');
+        $this->assertIsArray($r, 'dual-stack host must fall back to reachable pinned IPv4');
+        $this->assertSame(200, $r['status_code']);
+        $this->assertStringContainsString('Fixture Article', $r['body']);
+    }
+
+    public function testRedirectLoopStopsAtConfiguredMaxRedirects(): void
+    {
+        $agent = new HumbleHttpAgent(array('timeout' => 3, 'max_redirects' => 3), HumbleHttpAgent::METHOD_CURL_MULTI);
+        $r = $agent->get(self::base() . '/redirect-loop');
+        $this->assertIsArray($r);
+        $this->assertSame(302, $r['status_code']);
+        $this->assertStringContainsString('h=3', (string)$r['effective_url']);
+        $this->assertStringNotContainsString('h=5', (string)$r['effective_url']);
+    }
+
+    public function testProxyConfigurationNeverBypassesSsrfChecks(): void
+    {
+        SafeHttpUrl::$testAllowedHosts = null;
+        $proxied = new HumbleHttpAgent(
+            array('timeout' => 2, 'proxyhost' => '127.0.0.1:1'),
+            HumbleHttpAgent::METHOD_CURL_MULTI
+        );
+        $this->assertFalse($proxied->validateUrl('http://127.0.0.1/admin'));
+        $this->assertFalse($proxied->validateUrl('http://169.254.169.254/latest/meta-data/'));
+        $this->assertFalse($proxied->validateUrl('file:///etc/passwd'));
     }
 
     /** Access the agent's per-URL request map for assertions. */
