@@ -10,7 +10,7 @@ use PHPUnit\Framework\TestCase;
 #[Group('integration')]
 final class AdminConfigTest extends TestCase
 {
-    /** Copies app/ plus the root custom_config.php into a temp dir, as the image does. */
+    /** Copies app/ plus docker/custom_config.php into a temp dir, as the image does. */
     private static function stagedAppDir(): string
     {
         $dir = sys_get_temp_dir() . '/ftrcfg-' . bin2hex(random_bytes(4));
@@ -24,7 +24,7 @@ final class AdminConfigTest extends TestCase
                 copy($file->getPathname(), $target);
             }
         }
-        copy(dirname(FTR_APP_DIR) . '/custom_config.php', $dir . '/custom_config.php');
+        copy(dirname(FTR_APP_DIR) . '/docker/custom_config.php', $dir . '/custom_config.php');
         return $dir;
     }
 
