@@ -3,14 +3,14 @@
 .gitignore
 .opencode
 /Readme.md
+/AGENTS.md
+/CLAUDE.md
 /LICENSE
 /compose.yml
 /docker-bake.hcl
-/calls.http
 docs
 tests
 custom
-app/ubuntu-16.04.pp
 **/.DS_Store
 **/*.log
 **/*.swp

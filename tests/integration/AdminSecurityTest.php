@@ -25,7 +25,7 @@ final class AdminSecurityTest extends TestCase
             $t = $dir . substr($e->getPathname(), strlen(FTR_APP_DIR));
             $e->isDir() ? mkdir($t, 0777, true) : copy($e->getPathname(), $t);
         }
-        copy(dirname(FTR_APP_DIR) . '/custom_config.php', $dir . '/custom_config.php');
+        copy(dirname(FTR_APP_DIR) . '/docker/custom_config.php', $dir . '/custom_config.php');
         @mkdir($dir . '/site_config/standard', 0777, true);
         file_put_contents($dir . '/site_config/standard/version.txt', "test-rev\n");
         @mkdir($dir . '/site_config/custom', 0777, true);

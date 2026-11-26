@@ -32,7 +32,7 @@ final class FeedOutputTest extends TestCase
             $t = $dir . substr($e->getPathname(), strlen(FTR_APP_DIR));
             $e->isDir() ? mkdir($t, 0777, true) : copy($e->getPathname(), $t);
         }
-        copy(dirname(FTR_APP_DIR) . '/custom_config.php', $dir . '/custom_config.php');
+        copy(dirname(FTR_APP_DIR) . '/docker/custom_config.php', $dir . '/custom_config.php');
         self::$staged = $dir;
     }
 

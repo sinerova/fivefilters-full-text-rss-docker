@@ -99,7 +99,7 @@ http://localhost:8080/extract.php?url=https://example.org/article.html
 http://localhost:8080/makefulltextfeed.php?url=https://example.org/feed.xml&max=10
 ```
 
-See [calls.http](calls.http) for more examples.
+See [docs/calls.http](docs/calls.http) for more examples.
 
 ## Building
 
@@ -124,7 +124,7 @@ The base image and the site-rules commit are pinned in the `Dockerfile` (`PHP_IM
 
 ## Configuration
 
-Settings live in `custom_config.php` (copied into the image). Set environment variables in `compose.yml`.
+Settings live in `docker/custom_config.php` (copied into the image as `custom_config.php`). Set environment variables in `compose.yml`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

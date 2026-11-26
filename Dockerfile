@@ -66,7 +66,7 @@ COPY --chown=root:root --chmod=0644 docker/ftr-site.conf /etc/apache2/sites-avai
 
 WORKDIR /var/www/html
 COPY --chown=root:root --chmod=u=rwX,go=rX app/ /var/www/html/
-COPY --chown=root:root --chmod=0644 custom_config.php /var/www/html/custom_config.php
+COPY --chown=root:root --chmod=0644 docker/custom_config.php /var/www/html/custom_config.php
 COPY --from=siteconfig --chown=root:root --chmod=u=rwX,go=rX /ftr-site-config/ /var/www/html/site_config/standard/
 
 # Only cache/ and site_config/custom/ are writable by www-data; code and standard rules stay root-owned go-w.
