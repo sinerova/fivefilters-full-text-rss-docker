@@ -21,6 +21,15 @@ final class FeedOutputTest extends TestCase
     }
 
     private static ?string $staged = null;
+    private static ?string $errorLog = null;
+
+    private static function errorLogPath(): string
+    {
+        if (self::$errorLog === null) {
+            self::$errorLog = sys_get_temp_dir() . '/ftrfeed-errors-' . bin2hex(random_bytes(4)) . '.log';
+        }
+        return self::$errorLog;
+    }
 
     /** App copy plus the shipped custom_config.php, laid out as in the image. */
     public static function setUpBeforeClass(): void
@@ -80,15 +89,28 @@ chdir({$app});
 include {$app} . {$target};
 PHP);
         $devnull = DIRECTORY_SEPARATOR === '\\' ? 'NUL' : '/dev/null';
-        $cmd = escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -d error_reporting=E_ALL^E_DEPRECATED '
-            . escapeshellarg($script) . ' 2>' . $devnull;
+        // Log every PHP diagnostic (including deprecations) so tearDown() can fail the test on any.
+        $cmd = escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -d error_reporting=E_ALL -d log_errors=1 -d error_log='
+            . escapeshellarg(self::errorLogPath()) . ' ' . escapeshellarg($script) . ' 2>' . $devnull;
         $out = (string)shell_exec($cmd);
         unlink($script);
         return $out;
     }
 
+    protected function tearDown(): void
+    {
+        $log = is_file(self::errorLogPath()) ? (string)file_get_contents(self::errorLogPath()) : '';
+        @unlink(self::errorLogPath());
+        $this->assertDoesNotMatchRegularExpression(
+            '/PHP (Deprecated|Warning|Notice|Fatal error|Parse error)/',
+            $log,
+            'The endpoint must not raise PHP diagnostics'
+        );
+    }
+
     protected function setUp(): void
     {
+        @unlink(self::errorLogPath());
         if (!self::fixtureReachable()) {
             $this->markTestSkipped('Fixture server not running (see tests/README.md).');
         }

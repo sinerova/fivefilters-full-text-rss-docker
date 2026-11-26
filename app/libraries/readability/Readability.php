@@ -123,8 +123,8 @@ class Readability
 			// Can we avoid this encoding/deocding step? Test on:
 			// http://www.medialens.org/index.php/alerts/alert-archive/2017/837-undermining-democracy-corporate-media-bias-on-jeremy-corbyn-boris-johnson-and-syria.html
 			$html = str_replace('&apos;', "'", $html); // other named entities handled okay
-			$html = mb_convert_encoding($html, 'HTML-ENTITIES', "UTF-8");
-			$html = mb_convert_encoding($html, "UTF-8", 'HTML-ENTITIES');
+			// The former HTML-ENTITIES encode/decode round trip is gone (deprecated in PHP 8.2,
+			// removed in 9). It also decoded &lt; and &amp; back into raw markup.
 			$this->dom = @Layershifter\Gumbo\Parser::load($html);
 		} elseif ($parser=='html5lib' || $parser=='html5php') {
 			//use Masterminds\HTML5;
@@ -140,7 +140,9 @@ class Readability
 		if ($this->dom === null) {
 			$this->dom = new DOMDocument();
 			$this->dom->preserveWhiteSpace = false;
-			$html = mb_convert_encoding($html, 'HTML-ENTITIES', "UTF-8");
+			// Numeric entities for all non-ASCII code points (libxml assumes Latin-1 without a charset).
+			// Replaces mb_convert_encoding(..., 'HTML-ENTITIES'), which is deprecated since PHP 8.2.
+			$html = mb_encode_numericentity($html, array(0x80, 0x10FFFF, 0, 0x1FFFFF), 'UTF-8');
 			@$this->dom->loadHTML($html);
 		}
 		$this->dom->registerNodeClass('DOMElement', 'JSLikeHTMLElement');

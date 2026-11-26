@@ -644,8 +644,10 @@ if ($accept !== 'html') {
 	$feed = new SimplePie();
 	// some feeds use the text/html content type - force_feed tells SimplePie to process anyway
 	$feed->force_feed(true);
-	$feed->set_file_class('SimplePie_HumbleHttpAgent');
-	$feed->set_sanitize_class('DisableSimplePieSanitize');
+	// Registry calls replace set_file_class()/set_sanitize_class(), deprecated since SimplePie 1.3
+	// (they raise E_USER_DEPRECATED). The third argument keeps the legacy-class behaviour.
+	$feed->get_registry()->register(\SimplePie\File::class, 'SimplePie_HumbleHttpAgent', true);
+	$feed->get_registry()->register(\SimplePie\Sanitize::class, 'DisableSimplePieSanitize', true);
 	// need to assign this manually it seems
 	$feed->sanitize = new DisableSimplePieSanitize();
 	//$feed->set_feed_url($url); // colons appearing in the URL's path get encoded

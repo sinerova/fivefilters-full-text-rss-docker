@@ -185,7 +185,7 @@ class SiteConfig
 		return self::load_cached($key);
 	}
 
-	protected static function add_to_cache_merged($host, $exact_host_match, SiteConfig $config=null) {
+	protected static function add_to_cache_merged($host, $exact_host_match, ?SiteConfig $config=null) {
 		if ($exact_host_match) {
 			$key = $host.'.merged.ex';
 		} else {
